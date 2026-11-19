@@ -90,6 +90,9 @@ public:
         return xQueueReceive(handle_, &out_item, ticks_to_wait) == pdTRUE;
     }
 
+    /** @return Native FreeRTOS queue handle. */
+    [[nodiscard]] QueueHandle_t handle() const noexcept { return handle_; }
+
 private:
     QueueHandle_t handle_{nullptr};
 };
@@ -125,8 +128,51 @@ public:
         xSemaphoreGive(handle_);
     }
 
+    /** @return Native FreeRTOS mutex handle. */
+    [[nodiscard]] SemaphoreHandle_t handle() const noexcept { return handle_; }
+
 private:
     SemaphoreHandle_t handle_{nullptr};
+};
+
+/**
+ * @brief RAII lock that guards a resource only while the scheduler is running.
+ *
+ * Before the scheduler starts, only main() executes, so there is no contention
+ * to guard against — and acquiring a FreeRTOS mutex in that window relies on
+ * kernel-internal pre-scheduler behavior (priority inheritance against
+ * pxCurrentTCB). The guard therefore proceeds unlocked when the scheduler has
+ * not started and locks with portMAX_DELAY once it runs. Not usable while the
+ * scheduler is suspended.
+ */
+class SchedulerLock {
+public:
+    /** @brief Locks the mutex unless the scheduler has not started yet. */
+    explicit SchedulerLock(Mutex& mutex) noexcept : mutex_(mutex) {
+        if (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) {
+            return;
+        }
+        proceed_ = mutex_.lock(portMAX_DELAY);
+        held_ = proceed_;
+    }
+
+    /** @brief Releases the mutex, if it was acquired. */
+    ~SchedulerLock() noexcept {
+        if (held_) {
+            mutex_.unlock();
+        }
+    }
+
+    SchedulerLock(const SchedulerLock&) = delete;
+    SchedulerLock& operator=(const SchedulerLock&) = delete;
+
+    /** @return true when the protected call may proceed. */
+    explicit operator bool() const noexcept { return proceed_; }
+
+private:
+    Mutex& mutex_;
+    bool proceed_{true};
+    bool held_{false};
 };
 
 class LockGuard {

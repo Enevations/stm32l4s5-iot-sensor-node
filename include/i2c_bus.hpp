@@ -43,6 +43,9 @@ public:
      */
     bool init() noexcept;
 
+    /** @brief Exposes the bus mutex for diagnostics. */
+    rtos::Mutex& mutex() noexcept { return mutex_; }
+
     /**
      * @brief Checks whether a 7-bit device address acknowledges the bus.
      * @param dev_addr_7bit 7-bit peripheral address.

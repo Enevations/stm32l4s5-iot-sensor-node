@@ -1,9 +1,10 @@
 # STM32L4S5 Base Firmware
 
-This repository is a minimal C++17 and FreeRTOS base firmware for the
-STMicroelectronics **B-L4S5I-IOT01A** discovery board. It configures the
-STM32L4S5, starts a FreeRTOS task that blinks LD2, and prints a heartbeat over
-the ST-LINK virtual COM port.
+This repository is a C++17 and FreeRTOS firmware for the STMicroelectronics
+**B-L4S5I-IOT01A** discovery board. It reads the onboard HTS221
+humidity/temperature sensor over I2C2 and prints sensor telemetry over the
+ST-LINK virtual COM port, while a heartbeat task drives LED LD2 and reports
+per-task stack margins.
 
 ## What it does
 
@@ -13,29 +14,43 @@ At startup, `src/main.cpp`:
 2. Configures the MSI/MSI-PLL clock tree for an 80 MHz system clock.
 3. Enables GPIOB and configures PB14 as the LD2 green LED.
 4. Configures PB6 (USART1 TX) and PB7 (USART1 RX) for 115200 baud.
-5. Creates the `Blinky` FreeRTOS task.
-6. Prints a banner and then a blink count every second.
+5. Initializes I2C2 (PB10/PB11) and verifies that the expected onboard
+   sensors respond (a power-on self-test).
+6. Creates three FreeRTOS tasks and starts the scheduler:
+   - **Heartbeat** (priority 2): blinks LD2 every second (fast blinks on
+     hardware fault) and prints per-task stack high-water marks every ~5 s.
+   - **SensorTask** (priority 1): initializes the HTS221 (WHO_AM_I check,
+     factory calibration, 1 Hz ODR with BDU) and samples it once per second.
+   - **TelemetryTask** (priority 1): prints each sample as
+     `[<uptime> ms] Temp: <t>.<tt> C | Humidity: <h>.<hh> %`.
 
-The FreeRTOS SysTick runs at 1 kHz. The tick hook calls `HAL_IncTick()`, and
-the project also has hooks for allocation failure and stack overflow detection.
+The FreeRTOS SysTick runs at 1 kHz. The tick hook calls `HAL_IncTick()`. The
+firmware also has fail-stop hooks for allocation failure, stack overflow, and
+hard faults; see [Fault reporting](#fault-reporting-and-diagnostics).
 
 ## Hardware
 
 - Board: STMicroelectronics B-L4S5I-IOT01A
 - MCU: STM32L4S5VIT6
 - Core: ARM Cortex-M4F
-- LD2: PB14
-- External red failure LED: PA5 (through a current-limiting resistor to ground)
+- LD2: PB14 (heartbeat; fast blink pattern signals a hardware fault)
+- Onboard sensors: I2C2 bus on PB10 (SCL) / PB11 (SDA), with 2.2 kΩ external
+  pull-ups (per board user manual UM2708). Expected addresses:
+  - LIS3MDL magnetometer: 0x1E
+  - HTS221 humidity/temperature: 0x5F (the sensor this firmware reads)
+  - LSM6DSL accelerometer/gyro: 0x6A
+  - LPS22HB barometric pressure: 0x5D
 - USART1 TX: PB6
 - USART1 RX: PB7
 - ST-LINK virtual COM port: 115200 baud, 8-N-1
 
-If I2C2 initialization fails, the firmware stops the green heartbeat and
-blinks the external red LED on PA5. A scan that initializes successfully but
-finds no responding devices is not treated as a failure.
+The I2C2 self-test treats a bus initialization failure or a missing expected
+device as a hardware fault; the heartbeat task then blinks LD2 at 250 ms
+instead of 1 s. Sensor read failures at runtime are logged and retried on the
+next sample cycle.
 
 The 115200 baud serial connection is read through the board's ST-LINK USB
-connection. No wiring is required for the default blink and serial output.
+connection. No wiring is required.
 
 ## Project layout
 
@@ -47,11 +62,15 @@ connection. No wiring is required for the default blink and serial output.
 │   ├── FreeRTOSConfig.h               # FreeRTOS features and interrupt priorities
 │   └── stm32l4xx_hal_conf.h           # Enabled HAL modules
 ├── include/
-│   ├── i2c_bus.hpp                    # I2C bus interface scaffold
-│   └── rtos.hpp                       # FreeRTOS C++ RAII wrappers
+│   ├── humidity_temp_snsr.hpp         # HTS221 humidity/temperature driver interface
+│   ├── i2c_bus.hpp                    # Thread-safe I2C2 bus interface
+│   ├── led.hpp                        # GPIO LED wrapper
+│   ├── rtos.hpp                       # FreeRTOS C++ RAII wrappers
+│   └── uart.hpp                       # Thread-safe UART wrapper
 ├── src/
-│   ├── i2c_bus.cpp                    # I2C example scaffold
-│   └── main.cpp                       # Clock, GPIO, UART, and FreeRTOS application
+│   ├── humidity_temp_snsr.cpp         # HTS221 calibration and sample conversion
+│   ├── i2c_bus.cpp                    # I2C2 HAL setup and serialized transactions
+│   └── main.cpp                       # Clock, GPIO, tasks, and telemetry application
 ├── STM32L4S5VITx_FLASH.ld             # 2 MB Flash / 640 KB SRAM memory layout
 ├── docs/
 │   └── stm32_b_l4s5i_iot01a_setup_guide.md
@@ -60,9 +79,24 @@ connection. No wiring is required for the default blink and serial output.
 └── build/debug/                       # Existing debug build outputs
 ```
 
-The I2C implementation and example in `include/i2c_bus.hpp` and
-`src/i2c_bus.cpp` are development scaffolding. The current application in
-`src/main.cpp` does not initialize I2C or run an I2C scan.
+## Application architecture
+
+`AppContext` (defined in `src/main.cpp`) owns the shared state: the I2C bus
+wrapper and the telemetry queue. All task-to-task communication flows through
+the queue, and the I2C/UART wrappers serialize access with their own mutexes
+(`rtos::SchedulerLock`), so no task ever holds two locks at once.
+
+The HTS221 driver (`drivers::HumidityTempSnsr`) reads the factory calibration
+coefficients (0x30-0x3F) once during `init()` and converts raw ADC output with
+ST's linear-interpolation formula in `read()`. Register block reads set the
+auto-increment bit, and block data update (BDU) is enabled so humidity and
+temperature are always read as a consistent pair.
+
+**Important pitfall:** objects referenced by FreeRTOS tasks must not live in
+`main()`'s stack frame. The Cortex-M4F port resets the MSP from the vector
+table when the first task starts, so SysTick and other exception frames
+overwrite main's abandoned frame. `AppContext` is therefore declared
+`static` inside `main()`; keep it that way.
 
 ## Resource ownership and RAII
 
@@ -80,9 +114,42 @@ The RAII wrappers in `include/rtos.hpp` follow this pattern:
   destructor.
 - `LockGuard` takes a mutex when constructed and releases it when destroyed,
   even if the function exits early or throws an exception.
+- `SchedulerLock` behaves like `LockGuard` once the scheduler is running, but
+  before the scheduler starts it proceeds without the mutex (only `main()`
+  runs then, so there is nothing to serialize against).
 
 This reduces the risk of leaked tasks, queues, or mutex ownership and keeps
 resource cleanup close to the code that acquires the resource.
+
+## Fault reporting and diagnostics
+
+Failures stop the system loudly instead of freezing silently:
+
+- **Allocation failure** prints `[FATAL] FreeRTOS heap exhausted` and halts.
+- **Stack overflow** (FreeRTOS level-2 checking) prints
+  `[FATAL] Stack overflow in task: <name>` and halts.
+- **Hard fault** prints the faulting task name, the stacked PC/LR, xPSR, PSP,
+  and the CFSR/HFSR/BFAR/MMFAR fault registers, then halts.
+
+Decode a reported PC or LR against the ELF to find the faulting code:
+
+```sh
+arm-none-eabi-addr2line -e build/debug/stm32l4s5-base.elf -f -C 0x<addr>
+```
+
+The hard fault handler runs on the untouched MSP stack, so the report survives
+even faults caused by a task destroying its own stack.
+
+The heartbeat task also prints stack high-water marks every ~5 s:
+
+```text
+Stack free words: HB=332 SN=930 TM=880
+```
+
+Values are minimum-ever free words per task (Heartbeat, SensorTask,
+TelemetryTask); a value near zero identifies a task at risk of overflow.
+At fault time the firmware additionally hex-dumps the UART/I2C mutex and
+telemetry queue structures so memory corruption can be compared across runs.
 
 ## Build dependencies
 
@@ -210,14 +277,20 @@ Open the board's ST-LINK virtual COM port with a serial terminal:
 - Stop: 1 bit
 - Flow control: none
 
-You should see a startup banner followed by:
+You should see a startup banner, the I2C self-test result, and then sensor
+telemetry once per second with stack reports every ~5 s:
 
 ```text
-Blink #1 (uptime: 1000 ms)
-Blink #2 (uptime: 2000 ms)
+[Post Success] All expected devices found
+
+STM32L4S5I-IOT01A Sensor Node
+[72 ms] Temp: 31.71 C | Humidity: 46.21 %
+[1072 ms] Temp: 31.65 C | Humidity: 46.11 %
+Stack free words: HB=332 SN=930 TM=880
 ```
 
-Press the board reset button to restart the application.
+Sensor read failures print `Sensor read failed! Try again.` and the firmware
+continues sampling. Press the board reset button to restart the application.
 
 ## Cleaning
 

@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "stm32l4xx_hal.h"
+#include "rtos.hpp"
 
 /**
  * @brief Thin C++ wrapper for an STM32 HAL UART peripheral.
@@ -24,7 +25,7 @@ public:
      * @param alternate GPIO alternate-function selection.
      * @param baud_rate UART baud rate.
      */
-    constexpr Uart(USART_TypeDef* instance,
+    Uart(USART_TypeDef* instance,
                    uintptr_t port_base,
                    uint16_t tx_pin,
                    uint16_t rx_pin,
@@ -43,7 +44,6 @@ public:
     void init() noexcept {
         enable_peripheral_clock();
         enable_gpio_clock();
-
         GPIO_InitTypeDef uart_pins{};
         uart_pins.Pin = tx_pin_ | rx_pin_;
         uart_pins.Mode = GPIO_MODE_AF_PP;
@@ -65,6 +65,9 @@ public:
         HAL_UART_Init(&handle_);
     }
 
+    /** @brief Exposes the UART mutex for diagnostics. */
+    rtos::Mutex& mutex() noexcept { return mutex_; }
+
     /**
      * @brief Transmits a binary buffer synchronously.
      *
@@ -77,19 +80,12 @@ public:
             return HAL_ERROR;
         }
 
-        // Before the scheduler starts, only main() is executing (no contention possible).
-        // Passing 0 ticks prevents FreeRTOS from asserting if called pre-scheduler.
-        const TickType_t wait_ticks =
-            (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) ? portMAX_DELAY : 0;
-
-        if(!mutex_.lock(wait_ticks)) {
+        rtos::SchedulerLock lock(mutex_);
+        if (!lock) {
             return HAL_BUSY;
         }
 
-        const HAL_StatusTypeDef status = HAL_UART_Transmit(&handle_, data,
-                                 static_cast<uint16_t>(length), timeout);
-        mutex_.unlock();
-        return status;
+        return HAL_UART_Transmit(&handle_, data, static_cast<uint16_t>(length), timeout);
     }
 
     /**
