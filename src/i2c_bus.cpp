@@ -42,23 +42,45 @@ bool I2cBus::init() noexcept {
 }
 
 bool I2cBus::is_device_ready(uint8_t dev_addr_7bit, uint32_t trials, uint32_t timeout_ms) noexcept {
-    rtos::LockGuard lock(mutex_);
+
+    const TickType_t wait_ticks =
+            (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) ? portMAX_DELAY : 0;
+
+    if(!mutex_.lock(wait_ticks)){
+        return false;
+    }
     const uint16_t addr_8bit = static_cast<uint16_t>(dev_addr_7bit) << 1;
-    return HAL_I2C_IsDeviceReady(&hi2c_, addr_8bit, trials, timeout_ms) == HAL_OK;
+    const bool ready = HAL_I2C_IsDeviceReady(&hi2c_, addr_8bit, trials, timeout_ms) == HAL_OK;
+    mutex_.unlock();
+    return ready;
 }
 
 bool I2cBus::write_reg(uint8_t dev_addr_7bit, uint8_t reg_addr, uint8_t value, uint32_t timeout_ms) noexcept {
-    rtos::LockGuard lock(mutex_);
+    const TickType_t wait_ticks =
+            (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) ? portMAX_DELAY : 0;
+
+    if(!mutex_.lock(wait_ticks)){
+        return false;
+    }
     const uint16_t addr_8bit = static_cast<uint16_t>(dev_addr_7bit) << 1;
-    return HAL_I2C_Mem_Write(&hi2c_, addr_8bit, reg_addr, I2C_MEMADD_SIZE_8BIT,
-                             &value, 1, timeout_ms) == HAL_OK;
+    const bool success = HAL_I2C_Mem_Write(&hi2c_, addr_8bit, reg_addr, I2C_MEMADD_SIZE_8BIT,
+                                           &value, 1, timeout_ms) == HAL_OK;
+    mutex_.unlock();
+    return success;
 }
 
 bool I2cBus::read_reg(uint8_t dev_addr_7bit, uint8_t reg_addr, uint8_t& out_value, uint32_t timeout_ms) noexcept {
-    rtos::LockGuard lock(mutex_);
+    const TickType_t wait_ticks =
+            (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) ? portMAX_DELAY : 0;
+
+    if(!mutex_.lock(wait_ticks)){
+        return false;
+    }
     const uint16_t addr_8bit = static_cast<uint16_t>(dev_addr_7bit) << 1;
-    return HAL_I2C_Mem_Read(&hi2c_, addr_8bit, reg_addr, I2C_MEMADD_SIZE_8BIT,
-                            &out_value, 1, timeout_ms) == HAL_OK;
+    const bool success = HAL_I2C_Mem_Read(&hi2c_, addr_8bit, reg_addr, I2C_MEMADD_SIZE_8BIT,
+                                          &out_value, 1, timeout_ms) == HAL_OK;
+    mutex_.unlock();
+    return success;
 }
 
 bool I2cBus::read_regs(uint8_t dev_addr_7bit, uint8_t start_reg_addr, uint8_t* buffer, std::size_t length, uint32_t timeout_ms) noexcept {
@@ -66,10 +88,17 @@ bool I2cBus::read_regs(uint8_t dev_addr_7bit, uint8_t start_reg_addr, uint8_t* b
         return false;
     }
 
-    rtos::LockGuard lock(mutex_);
+    const TickType_t wait_ticks =
+            (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) ? portMAX_DELAY : 0;
+
+    if(!mutex_.lock(wait_ticks)){
+        return false;
+    }
     const uint16_t addr_8bit = static_cast<uint16_t>(dev_addr_7bit) << 1;
-    return HAL_I2C_Mem_Read(&hi2c_, addr_8bit, start_reg_addr, I2C_MEMADD_SIZE_8BIT,
+    const bool success = HAL_I2C_Mem_Read(&hi2c_, addr_8bit, start_reg_addr, I2C_MEMADD_SIZE_8BIT,
                             buffer, static_cast<uint16_t>(length), timeout_ms) == HAL_OK;
+    mutex_.unlock();
+    return success;
 }
 
 } // namespace bsp

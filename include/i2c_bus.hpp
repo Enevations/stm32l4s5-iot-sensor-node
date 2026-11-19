@@ -6,11 +6,18 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <array>
 
 #include "stm32l4xx_hal.h"
 #include "rtos.hpp"
 
 namespace bsp {
+
+inline constexpr std::array<uint8_t, 4> kExpectedI2CDevices{ 0x1E, // LIS3MDL magnetometer
+                                                        0x5F, // HTS221 humidity/temp sensor
+                                                        0x6A, // LSM6DSL accelerometer/gyro
+                                                        0x5D  // LPS22HB barometric pressure sensor
+                                                    };
 
 /**
  * @brief Controls the STM32 I2C2 peripheral and serializes bus transactions.
@@ -20,11 +27,13 @@ namespace bsp {
  */
 class I2cBus {
 public:
+
     /** Creates an uninitialized I2C bus wrapper. */
     I2cBus() noexcept = default;
 
     /// Hardware handles are non-copyable.
     I2cBus(const I2cBus&) = delete;
+
     /// Hardware handles are non-copyable.
     I2cBus& operator=(const I2cBus&) = delete;
 

@@ -25,9 +25,14 @@ the project also has hooks for allocation failure and stack overflow detection.
 - MCU: STM32L4S5VIT6
 - Core: ARM Cortex-M4F
 - LD2: PB14
+- External red failure LED: PA5 (through a current-limiting resistor to ground)
 - USART1 TX: PB6
 - USART1 RX: PB7
 - ST-LINK virtual COM port: 115200 baud, 8-N-1
+
+If I2C2 initialization fails, the firmware stops the green heartbeat and
+blinks the external red LED on PA5. A scan that initializes successfully but
+finds no responding devices is not treated as a failure.
 
 The 115200 baud serial connection is read through the board's ST-LINK USB
 connection. No wiring is required for the default blink and serial output.

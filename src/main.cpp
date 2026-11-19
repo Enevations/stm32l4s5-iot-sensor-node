@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 
 #include "stm32l4xx_hal.h"
 #include "FreeRTOS.h"
@@ -11,6 +12,7 @@
 #include "i2c_bus.hpp"
 #include "uart.hpp"
 #include "led.hpp"
+#include "humidity_temp_snsr.hpp"
 
 #ifndef NDEBUG
 // OpenOCD uses this symbol to determine the priority range for FreeRTOS thread
@@ -42,9 +44,25 @@ void vApplicationStackOverflowHook(TaskHandle_t, char*) {
 
 } // extern "C"
 
+enum class BoardState : uint8_t {
+    Healthy = 0,
+    HardwareFault = 1,
+};
+
+struct TelemetryMessage {
+    uint32_t timestamp_ms{0};
+    float temperature_c{0.0f};
+    float humidity_pct{0.0f};
+};
+
+struct AppContext {
+    bsp::I2cBus i2c_bus;
+    rtos::Queue<TelemetryMessage> telemetry_queue{8};
+};
+
 static constexpr Led green_led(GPIOB_BASE, GPIO_PIN_14);
 static Uart uart1(USART1, GPIOB_BASE, GPIO_PIN_6, GPIO_PIN_7, GPIO_AF7_USART1, 115200);
-
+inline std::atomic<BoardState> gboard_state{BoardState::Healthy};
 
 // --- Hardware Initialization ---
 /** @brief Configures the MSI/PLL clock tree for an 80 MHz system clock. */
@@ -78,46 +96,118 @@ static void system_clock_config() {
 }
 
 /** @brief Configures GPIO and the USART1 ST-LINK virtual COM port pins. */
-static void gpio_and_uart_init() {
+static void ports_init() {
     green_led.init();
     uart1.init();
 }
 
+///** @brief Scans the I2C bus for devices and prints their addresses to UART1. If fail inform user and fail. */
+static void i2c_scan_check(void* raw_ctx) {
+    auto* ctx = static_cast<AppContext*>(raw_ctx);
+    char msg[64];
+
+    if (!ctx->i2c_bus.init()) {
+        std::snprintf(msg, sizeof(msg), "I2C2 init failed\n");
+        uart1.write(msg, std::strlen(msg));
+        gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
+        return;
+    }
+
+    bool all_devices_found = true;
+
+    for(uint8_t addr: bsp::kExpectedI2CDevices) {
+        if (!ctx->i2c_bus.is_device_ready(addr)) {
+            std::snprintf(msg, sizeof(msg), "[Post Fail] Missing device at 0x%02X\n", addr);
+            uart1.write(msg, std::strlen(msg));
+            all_devices_found = false;
+        }
+    }
+
+    if (all_devices_found) {
+        std::snprintf(msg, sizeof(msg), "[Post Success] All expected devices found\n");
+        uart1.write(msg, std::strlen(msg));
+    }
+    else {
+        std::snprintf(msg, sizeof(msg), "[Post Fail] One or more expected devices missing\n");
+        uart1.write(msg, std::strlen(msg));
+        gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
+    }
+
+}
+
+/** @brief Toggles the green LED at a regular interval. */
 static void heartbeat(void*) {
 
     const char* banner = "\r\nSTM32L4S5I-IOT01A Sensor Node\r\n";
-    uart1.write(banner, std::strlen(banner));
+    uart1.write(banner);
+
 
     for(;;) {
-        green_led.toggle();
-        rtos::sleep_ms(1000);
+        if (gboard_state.load(std::memory_order_acquire) == BoardState::HardwareFault) {
+            green_led.toggle();
+            rtos::sleep_ms(250);
+        }
+        else {
+            green_led.toggle();
+            rtos::sleep_ms(1000);
+        }
     }
 }
 
-static void i2c_task(void*) {
+static void sensor_task(void* raw_ctx) {
+    auto* ctx = static_cast<AppContext*>(raw_ctx);
+    drivers::HumidityTempSnsr sensor(ctx->i2c_bus);
 
-    char msg[64];
-
-    bsp::I2cBus i2c2;
-    if (!i2c2.init()) {
+    while (!sensor.init()) {
+        uart1.write("Sensor init failed\n");
+        gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
         for(;;) {
-            std::snprintf(msg, sizeof(msg), "I2C2 init failed\n");
-            uart1.write(msg);
             rtos::sleep_ms(1000);
         }
     }
 
-    for(uint8_t addr = 0x08; addr <= 0x77; ++addr) {
-        if (i2c2.is_device_ready(addr)) {
-            std::snprintf(msg, sizeof(msg), "I2C device found at 0x%02X\n", addr);
-            uart1.write(msg, std::strlen(msg));
-        }
-    }
-
     for(;;) {
+        const auto sample = sensor.read();
+        if (sample.valid) {
+            TelemetryMessage msg{
+                .timestamp_ms = HAL_GetTick(),
+                .temperature_c = sample.temperature_c,
+                .humidity_pct = sample.humidity_pct
+            };
+            ctx->telemetry_queue.send(msg);
+        }
+        else {
+            uart1.write("Sensor read failed! Try again.\n");
+        }
         rtos::sleep_ms(1000);
     }
+}
 
+static void telemetry_task(void* raw_ctx) {
+    auto* ctx = static_cast<AppContext*>(raw_ctx);
+    TelemetryMessage sample{};
+    char msg[96];
+
+    for(;;) {
+        if (ctx->telemetry_queue.receive(sample)) {
+            const int temp_whole = static_cast<int>(sample.temperature_c);
+            const int temp_frac  = static_cast<int>((sample.temperature_c - temp_whole) * 100.0f);
+            const int hum_whole  = static_cast<int>(sample.humidity_pct);
+            const int hum_frac   = static_cast<int>((sample.humidity_pct - hum_whole) * 100.0f);
+
+            const int len = std::snprintf(
+                msg, sizeof(msg),
+                "[%lu ms] Temp: %d.%02d C | Humidity: %d.%02d %%\r\n",
+                sample.timestamp_ms,
+                temp_whole, (temp_frac < 0 ? -temp_frac : temp_frac),
+                hum_whole, (hum_frac < 0 ? -hum_frac : hum_frac)
+            );
+
+            if (len > 0) {
+                uart1.write(msg, static_cast<std::size_t>(len));
+            }
+        }
+    }
 }
 
 /**
@@ -127,10 +217,16 @@ static void i2c_task(void*) {
 int main() {
     HAL_Init();
     system_clock_config();
-    gpio_and_uart_init();
+    ports_init();
 
-    rtos::Task scan_task("I2C Scan", 512, tskIDLE_PRIORITY + 1, i2c_task);
+    AppContext app{};
+
+    i2c_scan_check(&app);
+    
+    
     rtos::Task heartbeat_task("Heartbeat", 256, tskIDLE_PRIORITY + 2, heartbeat);
+    rtos::Task sensor_task_handle("SensorTask", 512, tskIDLE_PRIORITY + 1, sensor_task, &app);
+    rtos::Task telemetry_task_handle("TelemetryTask", 512, tskIDLE_PRIORITY + 1, telemetry_task, &app);
     vTaskStartScheduler();
 
     // The scheduler should not return; reaching here indicates startup failure.
