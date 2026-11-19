@@ -12,7 +12,7 @@ jobs:
     name: Host unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure host tests
         run: cmake -B build/host-tests -S tests -G Ninja
@@ -31,7 +31,7 @@ jobs:
       matrix:
         variant: [debug, release, selftest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install ARM toolchain
         run: |
@@ -43,7 +43,7 @@ jobs:
             libstdc++-arm-none-eabi-newlib
 
       - name: Cache FetchContent dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .cache/deps
           key: fetchcontent-${{ hashFiles('CMakeLists.txt') }}
@@ -71,7 +71,7 @@ jobs:
           test -f "dist/${{ matrix.variant }}/stm32l4s5-base.hex"
 
       - name: Upload flashing artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: stm32l4s5-${{ matrix.variant }}
           path: dist/${{ matrix.variant }}/
