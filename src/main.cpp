@@ -183,6 +183,50 @@ static void sensor_task(void* raw_ctx) {
     }
 }
 
+/**
+ * @brief Components of a signed float rendered with two fractional digits.
+ *
+ * Fraction digits are rounded, not truncated, so 9.999 renders as "10.00";
+ * the carry from a rounded fraction of 100 is applied to whole. The sign is
+ * kept separate from whole so values in (-1, 0) render as "-0.40" instead of
+ * "0.40".
+ */
+struct SplitFloat {
+    /** @brief True when the original value was negative. */
+    bool negative{false};
+    /** @brief Integer part of the absolute value. */
+    int whole{0};
+    /** @brief Fraction part in hundredths, always in [0, 99]. */
+    int frac{0};
+};
+
+/**
+ * @brief Splits a signed float into sign, integer part, and rounded hundredths.
+ *
+ * Avoids the float formatter in std::snprintf, which would pull the heavyweight
+ * newlib float-printf path into the firmware.
+ *
+ * @param value Value to split, rounded to two fractional digits.
+ * @return Components suitable for "%s%d.%02d"-style formatting; the sign is a
+ *         plain "-" prefix, so tiny negatives such as -0.001 render "-0.00".
+ */
+static SplitFloat split_float(float value) noexcept {
+    SplitFloat out;
+    if (value < 0.0f) {
+        out.negative = true;
+        value = -value;
+    }
+    out.whole = static_cast<int>(value);
+    const int rounded_frac =
+        static_cast<int>((value - static_cast<float>(out.whole)) * 100.0f + 0.5f);
+    if (rounded_frac >= 100) {
+        out.whole += 1;
+    } else {
+        out.frac = rounded_frac;
+    }
+    return out;
+}
+
 static void telemetry_task(void* raw_ctx) {
     auto* ctx = static_cast<AppContext*>(raw_ctx);
     TelemetryMessage sample{};
@@ -190,17 +234,15 @@ static void telemetry_task(void* raw_ctx) {
 
     for(;;) {
         if (ctx->telemetry_queue.receive(sample)) {
-            const int temp_whole = static_cast<int>(sample.temperature_c);
-            const int temp_frac  = static_cast<int>((sample.temperature_c - temp_whole) * 100.0f);
-            const int hum_whole  = static_cast<int>(sample.humidity_pct);
-            const int hum_frac   = static_cast<int>((sample.humidity_pct - hum_whole) * 100.0f);
+            const SplitFloat temp = split_float(sample.temperature_c);
+            const SplitFloat hum  = split_float(sample.humidity_pct);
 
             const int len = std::snprintf(
                 msg, sizeof(msg),
-                "[%lu ms] Temp: %d.%02d C | Humidity: %d.%02d %%\r\n",
+                "[%lu ms] Temp: %s%d.%02d C | Humidity: %d.%02d %%\r\n",
                 sample.timestamp_ms,
-                temp_whole, (temp_frac < 0 ? -temp_frac : temp_frac),
-                hum_whole, (hum_frac < 0 ? -hum_frac : hum_frac)
+                (temp.negative ? "-" : ""), temp.whole, temp.frac,
+                hum.whole, hum.frac
             );
 
             if (len > 0) {
