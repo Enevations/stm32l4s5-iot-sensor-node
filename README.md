@@ -118,6 +118,15 @@ The RAII wrappers in `include/rtos.hpp` follow this pattern:
   before the scheduler starts it proceeds without the mutex (only `main()`
   runs then, so there is nothing to serialize against).
 
+Each wrapper exposes `valid()`, which reports whether the kernel object was
+actually created. `Mutex::lock()`, `Queue::send()`, and `Queue::receive()`
+fail gracefully (return `false`) on a never-created object instead of
+dereferencing a null handle. `main()` checks `valid()` for every RTOS object
+before starting the scheduler and halts with a `[FATAL]` message if any
+creation failed. Heap exhaustion additionally trips the FreeRTOS
+malloc-failed hook from inside the kernel allocation, printing its own
+`[FATAL]` line before halting.
+
 This reduces the risk of leaked tasks, queues, or mutex ownership and keeps
 resource cleanup close to the code that acquires the resource.
 

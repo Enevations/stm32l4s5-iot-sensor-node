@@ -442,6 +442,17 @@ int main() {
     g_task_handles[0] = heartbeat_task.handle();
     g_task_handles[1] = sensor_task_handle.handle();
     g_task_handles[2] = telemetry_task_handle.handle();
+
+    // Belt-and-suspenders creation checks. Heap exhaustion normally trips
+    // vApplicationMallocFailedHook inside the kernel allocation itself, but
+    // this check attributes a failure to the exact object and keeps the
+    // fail-stop guarantee independent of that hook.
+    if (!uart1.mutex().valid() || !app.i2c_bus.mutex().valid() ||
+        !app.telemetry_queue.valid() || !heartbeat_task.valid() ||
+        !sensor_task_handle.valid() || !telemetry_task_handle.valid()) {
+        uart1.write("\r\n[FATAL] RTOS object creation failed\r\n");
+        while (true) {}
+    }
     vTaskStartScheduler();
 
     // The scheduler should not return; reaching here indicates startup failure.

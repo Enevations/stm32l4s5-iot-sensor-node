@@ -42,6 +42,9 @@ public:
     Task(const Task&) = delete;
     Task& operator=(const Task&) = delete;
 
+    /** @return true when task creation succeeded. */
+    [[nodiscard]] bool valid() const noexcept { return handle_ != nullptr; }
+
     /** @return Native FreeRTOS task handle. */
     [[nodiscard]] TaskHandle_t handle() const noexcept { return handle_; }
 
@@ -70,13 +73,20 @@ public:
     Queue(const Queue&) = delete;
     Queue& operator=(const Queue&) = delete;
 
+    /** @return true when queue allocation succeeded. */
+    [[nodiscard]] bool valid() const noexcept { return handle_ != nullptr; }
+
     /**
      * @brief Sends a copy of an item.
      * @param item Item to copy into the queue.
      * @param ticks_to_wait Maximum wait in RTOS ticks.
-     * @return true if the item was queued.
+     * @return true if the item was queued; false on failure or if the queue
+     *         was never created.
      */
     bool send(const T& item, TickType_t ticks_to_wait = portMAX_DELAY) noexcept {
+        if (handle_ == nullptr) {
+            return false;
+        }
         return xQueueSend(handle_, &item, ticks_to_wait) == pdTRUE;
     }
 
@@ -84,9 +94,13 @@ public:
      * @brief Receives an item.
      * @param[out] out_item Receives the queued value.
      * @param ticks_to_wait Maximum wait in RTOS ticks.
-     * @return true if an item was received.
+     * @return true if an item was received; false on failure or if the queue
+     *         was never created.
      */
     bool receive(T& out_item, TickType_t ticks_to_wait = portMAX_DELAY) noexcept {
+        if (handle_ == nullptr) {
+            return false;
+        }
         return xQueueReceive(handle_, &out_item, ticks_to_wait) == pdTRUE;
     }
 
@@ -114,18 +128,27 @@ public:
     Mutex(const Mutex&) = delete;
     Mutex& operator=(const Mutex&) = delete;
 
+    /** @return true when mutex allocation succeeded. */
+    [[nodiscard]] bool valid() const noexcept { return handle_ != nullptr; }
+
     /**
      * @brief Waits to acquire the mutex.
      * @param ticks_to_wait Maximum wait in RTOS ticks.
-     * @return true when the mutex was acquired.
+     * @return true when the mutex was acquired; false on failure or if the
+     *         mutex was never created.
      */
     bool lock(TickType_t ticks_to_wait = portMAX_DELAY) noexcept {
+        if (handle_ == nullptr) {
+            return false;
+        }
         return xSemaphoreTake(handle_, ticks_to_wait) == pdTRUE;
     }
 
-    /** Releases the mutex. */
+    /** Releases the mutex; a no-op when the mutex was never created. */
     void unlock() noexcept {
-        xSemaphoreGive(handle_);
+        if (handle_ != nullptr) {
+            xSemaphoreGive(handle_);
+        }
     }
 
     /** @return Native FreeRTOS mutex handle. */
