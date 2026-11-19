@@ -62,8 +62,13 @@ set(HAL_SOURCES
 )
 
 # 4. Define the firmware executable
+file(GLOB_RECURSE APP_SOURCES CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_SOURCE_DIR}/src/*.c"
+)
+
 add_executable(${PROJECT_NAME}.elf
-    src/main.cpp
+    ${APP_SOURCES}
     ${HAL_SOURCES}
     "${CUBE_DRIVERS}/CMSIS/Device/ST/STM32L4xx/Source/Templates/system_stm32l4xx.c"
     "${CUBE_DRIVERS}/CMSIS/Device/ST/STM32L4xx/Source/Templates/gcc/startup_stm32l4s5xx.s"
@@ -77,6 +82,7 @@ target_compile_definitions(${PROJECT_NAME}.elf PRIVATE
 )
 
 target_include_directories(${PROJECT_NAME}.elf PRIVATE
+    include
     config
     "${CUBE_DRIVERS}/STM32L4xx_HAL_Driver/Inc"
     "${CUBE_DRIVERS}/STM32L4xx_HAL_Driver/Inc/Legacy"

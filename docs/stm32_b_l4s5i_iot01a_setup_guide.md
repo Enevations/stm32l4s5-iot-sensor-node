@@ -45,7 +45,11 @@ port; no extra wiring is required.
 ├── docs/
 │   └── stm32_b_l4s5i_iot01a_setup_guide.md
 ├── src/
+│   ├── i2c_bus.cpp                # I2C example scaffold
 │   └── main.cpp                   # Clock, board peripherals, and application
+├── include/
+│   ├── i2c_bus.hpp                # I2C bus interface scaffold
+│   └── rtos.hpp                   # FreeRTOS C++ RAII wrappers
 ├── CMakeLists.txt                 # Firmware target and fetched dependencies
 ├── STM32L4S5VITx_FLASH.ld         # 2 MB Flash / 640 KB SRAM linker layout
 └── README.md
@@ -55,6 +59,10 @@ port; no extra wiring is required.
 
 - `src/main.cpp` contains the clock and peripheral initialization, FreeRTOS
   hooks, and the blinking/logging task.
+- `include/i2c_bus.hpp` declares an I2C2 wrapper and `include/rtos.hpp` provides
+  small C++ RAII wrappers for FreeRTOS tasks, queues, mutexes, and delays.
+  `src/i2c_bus.cpp` is currently an I2C scan example scaffold; neither I2C
+  support nor the scan is initialized by the firmware entry point.
 - `config/FreeRTOSConfig.h` controls the kernel tick, dynamic heap, hooks,
   interrupt priorities, and debugger task metadata.
 - `config/stm32l4xx_hal_conf.h` selects HAL modules and sets HAL clock constants.
