@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [master, "feat/**"]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  host-tests:
+    name: Host unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure host tests
+        run: cmake -B build/host-tests -S tests -G Ninja
+
+      - name: Build host tests
+        run: cmake --build build/host-tests
+
+      - name: Run host tests
+        run: ctest --test-dir build/host-tests --output-on-failure
+
+  firmware:
+    name: Firmware (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [debug, release, selftest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ARM toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi \
+            binutils-arm-none-eabi \
+            libnewlib-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: .cache/deps
+          key: fetchcontent-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-
+
+      - name: Configure firmware (${{ matrix.variant }})
+        run: |
+          args=(-G Ninja)
+          case "${{ matrix.variant }}" in
+            debug)    args+=(-DCMAKE_BUILD_TYPE=Debug) ;;
+            release)  args+=(-DCMAKE_BUILD_TYPE=Release) ;;
+            selftest) args+=(-DCMAKE_BUILD_TYPE=Debug -DSTM32_SELF_TEST=ON) ;;
+          esac
+          cmake -B "build/${{ matrix.variant }}" -S . "${args[@]}" \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+            -DFETCHCONTENT_BASE_DIR="$PWD/.cache/deps"
+
+      - name: Build firmware (${{ matrix.variant }})
+        run: cmake --build "build/${{ matrix.variant }}" -j
+
+      - name: Verify flashed artifacts
+        run: |
+          test -f "dist/${{ matrix.variant }}/stm32l4s5-base.elf"
+          test -f "dist/${{ matrix.variant }}/stm32l4s5-base.bin"
+          test -f "dist/${{ matrix.variant }}/stm32l4s5-base.hex"
+
+      - name: Upload flashing artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: stm32l4s5-${{ matrix.variant }}
+          path: dist/${{ matrix.variant }}/
+          retention-days: 7
+          if-no-files-found: error

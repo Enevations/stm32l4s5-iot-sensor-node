@@ -1,5 +1,7 @@
 # STM32L4S5 Base Firmware
 
+[![CI](https://github.com/Enevations/stm32l4s5-iot-sensor-node/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/Enevations/stm32l4s5-iot-sensor-node/actions/workflows/ci.yml)
+
 This repository is a C++17 and FreeRTOS firmware for the STMicroelectronics
 **B-L4S5I-IOT01A** discovery board. It reads the onboard HTS221
 humidity/temperature sensor over I2C2 and prints sensor telemetry over the
@@ -276,6 +278,18 @@ Which paths can be exercised, and how:
 The fault-handling logic itself (sign handling, fault-state transitions) is
 kept in pure, host-testable functions wherever practical so that most
 regressions surface in the unit suites instead of on hardware.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+- **Host unit tests** job: builds and runs the `tests/` suite with ctest.
+- **Firmware** job (matrix): builds the debug, release, and self-test
+  variants with the ARM toolchain, verifies the `dist/<variant>/` flashing
+  artifacts exist, and uploads them as workflow artifacts (7-day retention).
+
+The release variant matters in particular: it builds with `-flto`, which has
+already caught one LTO-only link failure that the debug build did not expose.
 
 ## Build dependencies
 
