@@ -11,20 +11,28 @@
 #include <cstring>
 #include <atomic>
 
+#ifdef STM32_SELF_TEST
+// Provided by tests/test_split_float.cpp, compiled into the firmware when
+// CMake is configured with -DSTM32_SELF_TEST=ON.
+extern bool run_split_float_tests(char* error_buffer, std::size_t error_size);
+#endif
+
 #include "stm32l4xx_hal.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "i2c_bus.hpp"
+#include "post_check.hpp"
 #include "uart.hpp"
 #include "led.hpp"
 #include "humidity_temp_snsr.hpp"
+#include "split_float.hpp"
 
-#ifndef NDEBUG
-// OpenOCD uses this symbol to determine the priority range for FreeRTOS thread
-// awareness; keep it in debug builds even when the linker would otherwise drop it.
-extern "C" {
-__attribute__((used)) int uxTopUsedPriority = configMAX_PRIORITIES - 1;
-}
+#ifdef STM32_SELF_TEST
+// Provided by tests/*.cpp, compiled into the firmware when CMake is
+// configured with -DSTM32_SELF_TEST=ON.
+extern bool run_split_float_tests(char* error_buffer, std::size_t error_size);
+extern bool run_hts221_tests(char* error_buffer, std::size_t error_size);
+extern bool run_post_check_tests(char* error_buffer, std::size_t error_size);
 #endif
 
 // --- FreeRTOS Kernel Hooks ---
@@ -142,10 +150,14 @@ void vApplicationStackOverflowHook(TaskHandle_t, char* task_name) {
 
 /** @brief Reports hard-fault context: task, full stacked frame, and fault registers.
  *
+ * Called from HardFault_Handler's inline assembly, which the optimizer cannot
+ * see: used + externally_visible keep the symbol alive and external under
+ * -flto release builds.
+ *
  * @param frame Basic exception frame: r0, r1, r2, r3, r12, lr, pc, xpsr.
  * @param exc_return EXC_RETURN value captured at handler entry (link register).
  */
-extern "C" [[noreturn]] void hard_fault_report(uint32_t* frame, uint32_t exc_return) {
+extern "C" [[gnu::used, gnu::externally_visible, noreturn]] void hard_fault_report(uint32_t* frame, uint32_t exc_return) {
     taskDISABLE_INTERRUPTS();
     uint32_t psp{0};
     __asm volatile("mrs %0, psp" : "=r"(psp));
@@ -182,13 +194,21 @@ extern "C" [[noreturn]] void hard_fault_report(uint32_t* frame, uint32_t exc_ret
 } // extern "C"
 
 // --- Hardware Initialization ---
-/** @brief Configures the MSI/PLL clock tree for an 80 MHz system clock. */
-static void system_clock_config() {
+/**
+ * @brief Configures the MSI/PLL clock tree for an 80 MHz system clock.
+ *
+ * @return true on success; false when any stage failed, in which case the
+ *         MCU keeps running on the default 4 MHz MSI and the caller should
+ *         flag the degraded state.
+ */
+static bool system_clock_config() {
     RCC_OscInitTypeDef osc{};
     RCC_ClkInitTypeDef clk{};
 
     // Scale 1 supports the selected 80 MHz system clock.
-    HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1);
+    if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK) {
+        return false;
+    }
 
     osc.OscillatorType = RCC_OSCILLATORTYPE_MSI;
     osc.MSIState = RCC_MSI_ON;
@@ -201,7 +221,9 @@ static void system_clock_config() {
     osc.PLL.PLLP = RCC_PLLP_DIV7;
     osc.PLL.PLLQ = RCC_PLLQ_DIV2;
     osc.PLL.PLLR = RCC_PLLR_DIV2; // SYSCLK = 160 MHz / 2 = 80 MHz
-    HAL_RCC_OscConfig(&osc);
+    if (HAL_RCC_OscConfig(&osc) != HAL_OK) {
+        return false;
+    }
 
     clk.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
                     RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
@@ -209,7 +231,7 @@ static void system_clock_config() {
     clk.AHBCLKDivider = RCC_SYSCLK_DIV1;
     clk.APB1CLKDivider = RCC_HCLK_DIV1;
     clk.APB2CLKDivider = RCC_HCLK_DIV1;
-    HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_4);
+    return HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_4) == HAL_OK;
 }
 
 /** @brief Configures GPIO and the USART1 ST-LINK virtual COM port pins. */
@@ -223,42 +245,34 @@ static void ports_init() {
  *
  * Runs from main() before the scheduler starts; the I2C bus mutex is not
  * required there because execution is single-threaded (see SchedulerLock).
- * Sets the global hardware-fault state when the bus or any expected device
- * fails to respond; the heartbeat task signals the fault with fast blinks.
+ * The probing logic itself lives in bsp::run_post_check, which is unit-tested
+ * against a fake bus. Sets the global hardware-fault state when the bus or
+ * any expected device fails to respond; the heartbeat task signals the fault
+ * with fast blinks.
  *
- * @param raw_ctx Pointer to the AppContext owning the I2C bus.
+ * @param ctx Application context owning the I2C bus.
  */
-static void i2c_scan_check(void* raw_ctx) {
-    auto* ctx = static_cast<AppContext*>(raw_ctx);
-    char msg[64];
-
-    if (!ctx->i2c_bus.init()) {
-        std::snprintf(msg, sizeof(msg), "I2C2 init failed\n");
-        uart1.write(msg, std::strlen(msg));
+static void i2c_scan_check(AppContext& ctx) {
+    if (!ctx.i2c_bus.init()) {
+        uart1.write("I2C2 init failed\n");
         gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
         return;
     }
 
-    bool all_devices_found = true;
-
-    for(uint8_t addr: bsp::kExpectedI2CDevices) {
-        if (!ctx->i2c_bus.is_device_ready(addr)) {
-            std::snprintf(msg, sizeof(msg), "[Post Fail] Missing device at 0x%02X\n", addr);
-            uart1.write(msg, std::strlen(msg));
-            all_devices_found = false;
-        }
+    const bsp::PostResult post = bsp::run_post_check(ctx.i2c_bus,
+                                                     bsp::kExpectedI2CDevices.data(),
+                                                     bsp::kExpectedI2CDevices.size());
+    if (post.all_found) {
+        uart1.write("[Post Success] All expected devices found\n");
+        return;
     }
 
-    if (all_devices_found) {
-        std::snprintf(msg, sizeof(msg), "[Post Success] All expected devices found\n");
-        uart1.write(msg, std::strlen(msg));
-    }
-    else {
-        std::snprintf(msg, sizeof(msg), "[Post Fail] One or more expected devices missing\n");
-        uart1.write(msg, std::strlen(msg));
-        gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
-    }
-
+    char msg[64];
+    std::snprintf(msg, sizeof(msg), "[Post Fail] Missing device at 0x%02X\n",
+                  post.missing_address);
+    uart1.write(msg, std::strlen(msg));
+    uart1.write("[Post Fail] One or more expected devices missing\n");
+    gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
 }
 
 /** @brief Toggles the green LED at a regular interval and reports stack margins. */
@@ -337,55 +351,11 @@ static void sensor_task(void* raw_ctx) {
 }
 
 /**
- * @brief Components of a signed float rendered with two fractional digits.
- *
- * Fraction digits are rounded, not truncated, so 9.999 renders as "10.00";
- * the carry from a rounded fraction of 100 is applied to whole. The sign is
- * kept separate from whole so values in (-1, 0) render as "-0.40" instead of
- * "0.40".
- */
-struct SplitFloat {
-    /** @brief True when the original value was negative. */
-    bool negative{false};
-    /** @brief Integer part of the absolute value. */
-    int whole{0};
-    /** @brief Fraction part in hundredths, always in [0, 99]. */
-    int frac{0};
-};
-
-/**
- * @brief Splits a signed float into sign, integer part, and rounded hundredths.
- *
- * Avoids the float formatter in std::snprintf, which would pull the heavyweight
- * newlib float-printf path into the firmware.
- *
- * @param value Value to split, rounded to two fractional digits.
- * @return Components suitable for "%s%d.%02d"-style formatting; the sign is a
- *         plain "-" prefix, so tiny negatives such as -0.001 render "-0.00".
- */
-static SplitFloat split_float(float value) noexcept {
-    SplitFloat out;
-    if (value < 0.0f) {
-        out.negative = true;
-        value = -value;
-    }
-    out.whole = static_cast<int>(value);
-    const int rounded_frac =
-        static_cast<int>((value - static_cast<float>(out.whole)) * 100.0f + 0.5f);
-    if (rounded_frac >= 100) {
-        out.whole += 1;
-    } else {
-        out.frac = rounded_frac;
-    }
-    return out;
-}
-
-/**
  * @brief Prints queued sensor samples as text lines over UART1.
  *
  * Blocks on the telemetry queue and formats each sample with integer-only
- * math (see split_float) to avoid pulling the newlib float formatter into
- * the firmware image.
+ * math (see include/split_float.hpp) to avoid pulling the newlib float
+ * formatter into the firmware image.
  *
  * @param raw_ctx Pointer to the AppContext owning the telemetry queue.
  */
@@ -414,14 +384,79 @@ static void telemetry_task(void* raw_ctx) {
     }
 }
 
+/// @brief Busy-wait approximation of a few hundred milliseconds.
+///
+/// Used only before HAL_Init succeeded, where SysTick and the HAL tick are
+/// unavailable and HAL_Delay() would hang forever on the frozen tick.
+static void busy_wait_no_tick() {
+    for (volatile uint32_t i = 0; i < 250000U; ++i) {
+        // Roughly 250 ms at the 4 MHz default clock.
+    }
+}
+
+/// @brief Best-effort failure report before HAL_Init succeeded.
+///
+/// The LED and UART do not depend on SysTick or the HAL tick, and the clock
+/// is still the default 4 MHz MSI, so both can be initialized and driven
+/// even in this state.
+static void fail_before_hal_init() {
+    green_led.init();
+    uart1.init();
+    uart1.write("\r\n[FATAL] HAL_Init failed\r\n");
+    while (true) {
+        green_led.toggle();
+        busy_wait_no_tick();
+    }
+}
+
 /**
  * @brief Initializes the MCU and starts the FreeRTOS scheduler.
  * @return This function normally never returns.
  */
 int main() {
-    HAL_Init();
-    system_clock_config();
+    if (HAL_Init() != HAL_OK) {
+        fail_before_hal_init();
+    }
+
+    const bool clock_ok = system_clock_config();
     ports_init();
+
+    if (!clock_ok) {
+        // Boot continues on the MSI fallback clock: HAL derives the UART
+        // baud and I2C timing from the actual clock, and the heartbeat task
+        // signals the degraded state with fast blinks.
+        gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
+        uart1.write("\r\n[WARN] Clock config failed; running on fallback clock\r\n");
+    }
+
+#ifdef STM32_SELF_TEST
+    {
+        char self_test_error[128];
+        bool self_test_ok = true;
+        if (!run_split_float_tests(self_test_error, sizeof(self_test_error))) {
+            self_test_ok = false;
+            uart1.write("[FATAL] Self-test split_float FAILED: ");
+            uart1.write(self_test_error, std::strlen(self_test_error));
+            uart1.write("\r\n");
+        }
+        if (!run_hts221_tests(self_test_error, sizeof(self_test_error))) {
+            self_test_ok = false;
+            uart1.write("[FATAL] Self-test hts221 FAILED: ");
+            uart1.write(self_test_error, std::strlen(self_test_error));
+            uart1.write("\r\n");
+        }
+        if (!run_post_check_tests(self_test_error, sizeof(self_test_error))) {
+            self_test_ok = false;
+            uart1.write("[FATAL] Self-test post_check FAILED: ");
+            uart1.write(self_test_error, std::strlen(self_test_error));
+            uart1.write("\r\n");
+        }
+        if (!self_test_ok) {
+            while (true) {}
+        }
+        uart1.write("Self-test PASS (split_float, hts221, post_check)\r\n");
+    }
+#endif
 
     // Static storage duration is mandatory: the FreeRTOS Cortex-M4F port
     // resets MSP from the vector table when the first task starts, so any
@@ -429,7 +464,7 @@ int main() {
     static AppContext app{};
     g_app_context = &app;
 
-    i2c_scan_check(&app);
+    i2c_scan_check(app);
 
     rtos::Task heartbeat_task("Heartbeat", 512, tskIDLE_PRIORITY + 2, heartbeat, &app);
     rtos::Task sensor_task_handle("SensorTask", 1024, tskIDLE_PRIORITY + 1, sensor_task, &app);

@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     ca-certificates \
     cmake \
+    g++ \
     gcc-arm-none-eabi \
     gdb-multiarch \
     binutils-arm-none-eabi \

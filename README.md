@@ -63,14 +63,24 @@ connection. No wiring is required.
 │   └── stm32l4xx_hal_conf.h           # Enabled HAL modules
 ├── include/
 │   ├── humidity_temp_snsr.hpp         # HTS221 humidity/temperature driver interface
-│   ├── i2c_bus.hpp                    # Thread-safe I2C2 bus interface
+│   ├── i2c_bus.hpp                    # STM32 I2C2 bus (implements II2cBus)
+│   ├── i2c_interface.hpp              # HAL-free II2cBus abstraction
 │   ├── led.hpp                        # GPIO LED wrapper
+│   ├── post_check.hpp                 # Pure I2C power-on self-test probe
 │   ├── rtos.hpp                       # FreeRTOS C++ RAII wrappers
+│   ├── split_float.hpp                # Constexpr telemetry float formatting (host-testable)
 │   └── uart.hpp                       # Thread-safe UART wrapper
 ├── src/
 │   ├── humidity_temp_snsr.cpp         # HTS221 calibration and sample conversion
 │   ├── i2c_bus.cpp                    # I2C2 HAL setup and serialized transactions
 │   └── main.cpp                       # Clock, GPIO, tasks, and telemetry application
+├── tests/
+│   ├── CMakeLists.txt                 # Host + cross-compiled test targets
+│   ├── fake_i2c_bus.hpp               # Emulated I2C bus with canned registers and NACKs
+│   ├── host_main.cpp                  # Entry point for host-built test binary
+│   ├── test_hts221.cpp                # HTS221 driver suite
+│   ├── test_post_check.cpp            # POST probe suite
+│   └── test_split_float.cpp           # Telemetry formatting suite
 ├── STM32L4S5VITx_FLASH.ld             # 2 MB Flash / 640 KB SRAM memory layout
 ├── docs/
 │   └── stm32_b_l4s5i_iot01a_setup_guide.md
@@ -160,6 +170,109 @@ TelemetryTask); a value near zero identifies a task at risk of overflow.
 At fault time the firmware additionally hex-dumps the UART/I2C mutex and
 telemetry queue structures so memory corruption can be compared across runs.
 
+## Testing
+
+### Architecture: interfaces + fakes
+
+Hardware-dependent code is separated from testable logic through a pure C++
+interface: `bsp::II2cBus` (include/i2c_interface.hpp) has no HAL dependency.
+`bsp::I2cBus` implements it with the STM32 HAL; tests inject
+`test::FakeI2cBus` (tests/fake_i2c_bus.hpp), which emulates a register file
+per device address and simulates NACKs by marking devices absent. The HTS221
+driver and the POST probe (`bsp::run_post_check`) run identically against
+both — on the target and in host unit tests.
+
+### Host unit tests
+
+Runs in the dev container and on any machine with a host C++ toolchain. The
+dev container Dockerfile includes `g++`; if your running container predates
+that change, install it once:
+
+```sh
+apt-get update && apt-get install -y g++
+```
+
+Then build and run (from the repository root):
+
+```sh
+cmake -B build/host-tests -S tests -G Ninja
+cmake --build build/host-tests
+./build/host-tests/unit_tests
+```
+
+Expected output: `PASS: split_float tests`, `PASS: hts221 tests`,
+`PASS: post_check tests`. You can also run `ctest --test-dir
+build/host-tests --output-on-failure`.
+
+### On-target self-test
+
+The same suites are compiled into the firmware and executed during boot,
+reporting over the ST-LINK UART:
+
+```sh
+cmake -B build/selftest -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+  -DFETCHCONTENT_BASE_DIR="$PWD/.cache/deps" \
+  -DSTM32_SELF_TEST=ON
+
+cmake --build build/selftest
+```
+
+Expected serial output: `Self-test PASS (split_float, hts221, post_check)`
+after the banner; a failing suite prints its case after `[FATAL] Self-test
+... FAILED:` and halts.
+
+#### Running the self-test on the target
+
+The self-test firmware runs automatically at boot; you only need to flash it
+and watch the serial port:
+
+1. Build it (above), or via VS Code: **Tasks: Run Build Task** →
+   **Build STM32 Firmware (Self-Test)**.
+2. Flash it exactly as described in [Flashing](#flashing) — the self-test
+   build mirrors its image to `dist/selftest/`, so in your Windows PowerShell
+   terminal:
+
+   ```powershell
+   & "D:/xpack-openocd-0.12.0-7/bin/openocd.exe" `
+     -f interface/stlink.cfg `
+     -f target/stm32l4x.cfg `
+     -c "program dist/selftest/stm32l4s5-base.elf verify reset exit"
+   ```
+
+3. Open the serial terminal as described in
+   [Viewing serial output](#viewing-serial-output) (115200 8-N-1) and watch
+   for the `Self-test PASS (...)` line after the banner.
+4. On failure the firmware prints `[FATAL] Self-test <suite> FAILED: <case>`
+   and halts (LED stops blinking). Fix the case, rebuild, and flash again.
+5. Afterwards, flash the normal debug or release image to return to the
+   regular firmware.
+
+### Test coverage
+
+| Suite | What it verifies |
+|-------|------------------|
+| `split_float` | Sign preservation in (-1, 0), rounding vs truncation, fraction carry, invariants across a value sweep |
+| `hts221` | WHO_AM_I check, calibration-image load, degenerate-calibration guard, linear interpolation at midpoints and endpoints, negative temperatures, humidity clamping, invalid sample on bus loss |
+| `post_check` | All-devices-present pass, missing-device detection with reported address, probe stop at first failure, empty list |
+
+### Testing the failure paths
+
+Which paths can be exercised, and how:
+
+| Path | How to trigger |
+|------|----------------|
+| Sensor failure modes | Covered by the `hts221` suite via `FakeI2cBus` (wrong WHO_AM_I, NACK, degenerate calibration, bus loss mid-run) |
+| Missing device at POST | Covered by the `post_check` suite |
+| Clock config failure | Debugger: break at the return of `HAL_RCC_ClockConfig` and force the return register to `HAL_ERROR` |
+| HAL_Init failure | Debugger: same technique at `HAL_Init`'s return |
+| Stack overflow | Temporarily shrink a task's stack (e.g. `SensorTask` to 64 words); the overflow hook names the task |
+| Mutex contention / queue backpressure | Lower the telemetry queue capacity and raise sensor rate |
+
+The fault-handling logic itself (sign handling, fault-state transitions) is
+kept in pure, host-testable functions wherever practical so that most
+regressions surface in the unit suites instead of on hardware.
+
 ## Build dependencies
 
 The project fetches these pinned dependencies during CMake configuration:
@@ -220,8 +333,8 @@ cmake -B build/release \
 cmake --build build/release
 ```
 
-The VS Code tasks provide the same build commands. Debug and release build
-directories are independent.
+The VS Code tasks provide the same build commands (debug, release, self-test,
+host unit tests). Debug and release build directories are independent.
 
 ## Build outputs
 
@@ -233,23 +346,42 @@ A successful build creates:
 - `build/<configuration>/stm32l4s5-base.map`
 - `build/<configuration>/compile_commands.json`
 
-The post-build step also reports the ELF Flash and RAM usage.
+The post-build step also reports the ELF Flash and RAM usage. Because `build/`
+is a Docker volume (see the container mounts), every build mirrors its
+`.elf`/`.bin`/`.hex` images to `dist/<build-type>/` in the repository root for
+Windows-host flashing — see [Flashing](#flashing).
 
 ## Flashing
 
 The board must be connected to the Windows host, not only to the dev container.
-Build the firmware in the container, then open a **PowerShell terminal on the
-Windows host** in the repository root and run xPack OpenOCD:
+
+**Important:** the container mounts `build/` as a Docker volume, so files under
+it are visible inside the container only — the Windows host cannot read them.
+Every build therefore mirrors its images to `dist/<variant>/` in the workspace
+root (which *is* shared with Windows) via a CMake post-build step:
+
+- `dist/debug/stm32l4s5-base.elf`
+- `dist/release/stm32l4s5-base.elf`
+- `dist/selftest/stm32l4s5-base.elf`
+
+Each folder also contains the `.bin` and `.hex` images. Then open a
+**PowerShell terminal on the Windows host** in the repository root and run
+xPack OpenOCD:
 
 ```powershell
 & "D:/xpack-openocd-0.12.0-7/bin/openocd.exe" `
   -f interface/stlink.cfg `
   -f target/stm32l4x.cfg `
-  -c "program build/debug/stm32l4s5-base.elf verify reset exit"
+  -c "program dist/debug/stm32l4s5-base.elf verify reset exit"
 ```
 
-Stop/reset any existing OpenOCD session before running the command. Use
-`build/release/stm32l4s5-base.elf` instead for the release image.
+Flash `dist/release/...` or `dist/selftest/...` instead for the release or
+self-test image. Stop/reset any existing OpenOCD session before running the
+command.
+
+If programming fails with `Error: Invalid command argument` or
+`couldn't open ...`, check the image path and that `verify`, `reset`, and
+`exit` are three separate words — hyphenated or merged forms are rejected.
 
 ## Debugging
 

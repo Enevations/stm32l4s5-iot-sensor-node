@@ -1,7 +1,8 @@
 #pragma once
 
 #include <cstdint>
-#include "i2c_bus.hpp"
+
+#include "i2c_interface.hpp"
 
 namespace drivers {
 
@@ -13,14 +14,14 @@ struct EnvironmentalSample {
 
 class HumidityTempSnsr {
 public:
-    static constexpr uint8_t kI2cAddress = 0x5F; // HTS221 7-bit I2C address[cite: 1]
+    static constexpr uint8_t kI2cAddress = 0x5F; // HTS221 7-bit I2C address
 
-    explicit HumidityTempSnsr(bsp::I2cBus& bus) noexcept : bus_(bus) {}
+    explicit HumidityTempSnsr(bsp::II2cBus& bus) noexcept : bus_(bus) {}
 
     HumidityTempSnsr(const HumidityTempSnsr&) = delete;
     HumidityTempSnsr& operator=(const HumidityTempSnsr&) = delete;
 
-    // Verifies WHO_AM_I (0xBC), loads factory calibration trims, and configures 1 Hz BDU mode[cite: 1]
+    // Verifies WHO_AM_I (0xBC), loads factory calibration trims, and configures 1 Hz BDU mode
     bool init() noexcept;
 
     // Reads raw ADC registers and applies linear interpolation calibration
@@ -29,7 +30,7 @@ public:
 private:
     bool load_calibration() noexcept;
 
-    bsp::I2cBus& bus_;
+    bsp::II2cBus& bus_;
 
     // Factory calibration coefficients (loaded once during init)
     float h0_rh_{0.0f};

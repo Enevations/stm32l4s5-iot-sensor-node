@@ -19,6 +19,18 @@
       "problemMatcher": ["$gcc"]
     },
     {
+      "label": "Build STM32 Firmware (Self-Test)",
+      "type": "shell",
+      "command": "if [ ! -f build/selftest/build.ninja ]; then cmake -B build/selftest -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake -DSTM32_SELF_TEST=ON -DFETCHCONTENT_BASE_DIR=${workspaceFolder}/.cache/deps; fi && cmake --build build/selftest",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Run Host Unit Tests",
+      "type": "shell",
+      "command": "if [ ! -f build/host-tests/build.ninja ]; then cmake -B build/host-tests -S tests -G Ninja; fi && cmake --build build/host-tests && ./build/host-tests/unit_tests",
+      "problemMatcher": []
+    },
+    {
       "label": "Clean Debug Build",
       "type": "shell",
       "command": "cmake --build build/debug --target clean",
