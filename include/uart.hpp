@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "stm32l4xx_hal.h"
+#include "rtos.hpp"
 
 /**
  * @brief Thin C++ wrapper for an STM32 HAL UART peripheral.
@@ -24,7 +25,7 @@ public:
      * @param alternate GPIO alternate-function selection.
      * @param baud_rate UART baud rate.
      */
-    constexpr Uart(USART_TypeDef* instance,
+    Uart(USART_TypeDef* instance,
                    uintptr_t port_base,
                    uint16_t tx_pin,
                    uint16_t rx_pin,
@@ -43,7 +44,6 @@ public:
     void init() noexcept {
         enable_peripheral_clock();
         enable_gpio_clock();
-
         GPIO_InitTypeDef uart_pins{};
         uart_pins.Pin = tx_pin_ | rx_pin_;
         uart_pins.Mode = GPIO_MODE_AF_PP;
@@ -65,6 +65,9 @@ public:
         HAL_UART_Init(&handle_);
     }
 
+    /** @brief Exposes the UART mutex for diagnostics. */
+    rtos::Mutex& mutex() noexcept { return mutex_; }
+
     /**
      * @brief Transmits a binary buffer synchronously.
      *
@@ -76,8 +79,13 @@ public:
         if (data == nullptr || length > UINT16_MAX) {
             return HAL_ERROR;
         }
-        return HAL_UART_Transmit(&handle_, data,
-                                 static_cast<uint16_t>(length), timeout);
+
+        rtos::SchedulerLock lock(mutex_);
+        if (!lock) {
+            return HAL_BUSY;
+        }
+
+        return HAL_UART_Transmit(&handle_, data, static_cast<uint16_t>(length), timeout);
     }
 
     /**
@@ -87,6 +95,7 @@ public:
      */
     HAL_StatusTypeDef write(const char* text,
                             uint32_t timeout = 100) noexcept {
+        
         if (text == nullptr) {
             return HAL_ERROR;
         }
@@ -102,6 +111,7 @@ private:
     uint8_t alternate_;
     uint32_t baud_rate_;
     UART_HandleTypeDef handle_{};
+    rtos::Mutex mutex_{};
 
     GPIO_TypeDef* port() const noexcept {
         return reinterpret_cast<GPIO_TypeDef*>(port_base_);

@@ -114,16 +114,17 @@ For an optimized release build, use `build/release` and
 Debug and release builds have separate output directories.
 
 The linker script defines 2048 KB Flash at `0x08000000` and 640 KB SRAM at
-`0x20000000`. The firmware target is named `stm32l4s5-base.elf`.
+`0x20000000`. The firmware target is named
+`stm32l4s5-iot-sensor-node.elf`.
 
 ## Build outputs
 
 A successful build creates these files in the selected build directory:
 
-- `stm32l4s5-base.elf` — ELF firmware image
-- `stm32l4s5-base.bin` — raw binary image
-- `stm32l4s5-base.hex` — Intel HEX image
-- `stm32l4s5-base.map` — linker map
+- `stm32l4s5-iot-sensor-node.elf` — ELF firmware image
+- `stm32l4s5-iot-sensor-node.bin` — raw binary image
+- `stm32l4s5-iot-sensor-node.hex` — Intel HEX image
+- `stm32l4s5-iot-sensor-node.map` — linker map
 - `compile_commands.json` — compile commands used by the C/C++ tools
 
 The build also prints the ELF's Flash and RAM usage.
@@ -139,11 +140,14 @@ xPack OpenOCD installation:
 & "C:\path\to\openocd.exe" `
   -f interface/stlink.cfg `
   -f target/stm32l4x.cfg `
-  -c "program build/debug/stm32l4s5-base.elf verify reset exit"
+  -c "program dist/debug/stm32l4s5-iot-sensor-node.elf verify reset exit"
 ```
 
-Use `build/release/stm32l4s5-base.elf` to flash the release build. Close any
-existing OpenOCD process using the board before starting another one.
+Use `dist/release/stm32l4s5-iot-sensor-node.elf` to flash the release build.
+The `build/` directory is a Docker volume and is not visible to Windows; the
+post-build step copies firmware images to `dist/<variant>/` in the shared
+workspace. Close any existing OpenOCD process using the board before starting
+another one.
 
 ## Debug from VS Code
 

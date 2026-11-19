@@ -4,7 +4,7 @@
     {
       "name": "Debug STM32L4S5 (Dev Container)",
       "cwd": "${workspaceFolder}",
-      "executable": "${workspaceFolder}/build/debug/stm32l4s5-base.elf",
+      "executable": "${workspaceFolder}/build/debug/stm32l4s5-iot-sensor-node.elf",
       "request": "launch",
       "type": "cortex-debug",
       "servertype": "external",

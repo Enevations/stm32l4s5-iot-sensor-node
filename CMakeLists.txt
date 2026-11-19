@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(stm32l4s5-base LANGUAGES C CXX ASM)
+project(stm32l4s5-iot-sensor-node LANGUAGES C CXX ASM)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
@@ -67,6 +67,10 @@ file(GLOB_RECURSE APP_SOURCES CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/src/*.c"
 )
 
+# Optional on-target self-test suite: -DSTM32_SELF_TEST=ON runs unit tests
+# during boot and reports the result over the ST-LINK UART.
+option(STM32_SELF_TEST "Compile the on-target self-test suite" OFF)
+
 add_executable(${PROJECT_NAME}.elf
     ${APP_SOURCES}
     ${HAL_SOURCES}
@@ -90,6 +94,15 @@ target_include_directories(${PROJECT_NAME}.elf PRIVATE
     "${CUBE_DRIVERS}/CMSIS/Core/Include"
 )
 
+if(STM32_SELF_TEST)
+    target_sources(${PROJECT_NAME}.elf PRIVATE
+        tests/test_split_float.cpp
+        tests/test_hts221.cpp
+        tests/test_post_check.cpp
+    )
+    target_compile_definitions(${PROJECT_NAME}.elf PRIVATE STM32_SELF_TEST STM32_TARGET)
+endif()
+
 target_compile_options(${PROJECT_NAME}.elf PRIVATE
     -Wall
     -Wextra
@@ -110,9 +123,31 @@ target_link_options(${PROJECT_NAME}.elf PRIVATE
     $<$<CONFIG:Release>:-Os -flto>
 )
 
-# 5. Post-build: print Flash/RAM usage and generate .bin / .hex images
+# 5. Post-build: print Flash/RAM usage, generate .bin / .hex images, and mirror
+# the final images to dist/<variant>/ in the workspace root.
+#
+# build/ is a Docker volume in the dev container, so it is visible inside the
+# container only; dist/ lives in the workspace root, which is shared with the
+# Windows host for flashing. Each configure gets its own subfolder so debug,
+# release, and self-test builds do not overwrite each other.
+if(STM32_SELF_TEST)
+    set(FW_DIST_SUBDIR selftest)
+elseif(CMAKE_BUILD_TYPE)
+    string(TOLOWER "${CMAKE_BUILD_TYPE}" FW_DIST_SUBDIR)
+else()
+    set(FW_DIST_SUBDIR default)
+endif()
+
+set(FW_DIST_DIR "${CMAKE_SOURCE_DIR}/dist/${FW_DIST_SUBDIR}")
+
 add_custom_command(TARGET ${PROJECT_NAME}.elf POST_BUILD
     COMMAND ${CMAKE_SIZE} $<TARGET_FILE:${PROJECT_NAME}.elf>
     COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${PROJECT_NAME}.elf> ${PROJECT_BINARY_DIR}/${PROJECT_NAME}.bin
     COMMAND ${CMAKE_OBJCOPY} -O ihex $<TARGET_FILE:${PROJECT_NAME}.elf> ${PROJECT_BINARY_DIR}/${PROJECT_NAME}.hex
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${FW_DIST_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:${PROJECT_NAME}.elf>
+        ${PROJECT_BINARY_DIR}/${PROJECT_NAME}.bin
+        ${PROJECT_BINARY_DIR}/${PROJECT_NAME}.hex
+        ${FW_DIST_DIR}/
 )
