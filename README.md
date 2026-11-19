@@ -237,7 +237,11 @@ and watch the serial port:
    & "D:/xpack-openocd-0.12.0-7/bin/openocd.exe" `
      -f interface/stlink.cfg `
      -f target/stm32l4x.cfg `
+<<<<<<< ours
      -c "program dist/selftest/stm32l4s5-iot-sensor-node.elf verify reset exit"
+=======
+     -c "program dist/selftest/stm32l4s5-base.elf verify reset exit"
+>>>>>>> theirs
    ```
 
 3. Open the serial terminal as described in
@@ -360,9 +364,15 @@ it are visible inside the container only — the Windows host cannot read them.
 Every build therefore mirrors its images to `dist/<variant>/` in the workspace
 root (which *is* shared with Windows) via a CMake post-build step:
 
+<<<<<<< ours
 - `dist/debug/stm32l4s5-iot-sensor-node.elf`
 - `dist/release/stm32l4s5-iot-sensor-node.elf`
 - `dist/selftest/stm32l4s5-iot-sensor-node.elf`
+=======
+- `dist/debug/stm32l4s5-base.elf`
+- `dist/release/stm32l4s5-base.elf`
+- `dist/selftest/stm32l4s5-base.elf`
+>>>>>>> theirs
 
 Each folder also contains the `.bin` and `.hex` images. Then open a
 **PowerShell terminal on the Windows host** in the repository root and run
@@ -372,7 +382,11 @@ xPack OpenOCD:
 & "D:/xpack-openocd-0.12.0-7/bin/openocd.exe" `
   -f interface/stlink.cfg `
   -f target/stm32l4x.cfg `
+<<<<<<< ours
   -c "program dist/debug/stm32l4s5-iot-sensor-node.elf verify reset exit"
+=======
+  -c "program dist/debug/stm32l4s5-base.elf verify reset exit"
+>>>>>>> theirs
 ```
 
 Flash `dist/release/...` or `dist/selftest/...` instead for the release or
