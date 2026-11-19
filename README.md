@@ -41,7 +41,12 @@ connection. No wiring is required for the default blink and serial output.
 ├── config/
 │   ├── FreeRTOSConfig.h               # FreeRTOS features and interrupt priorities
 │   └── stm32l4xx_hal_conf.h           # Enabled HAL modules
-├── src/main.cpp                       # Clock, GPIO, UART, and FreeRTOS application
+├── include/
+│   ├── i2c_bus.hpp                    # I2C bus interface scaffold
+│   └── rtos.hpp                       # FreeRTOS C++ RAII wrappers
+├── src/
+│   ├── i2c_bus.cpp                    # I2C example scaffold
+│   └── main.cpp                       # Clock, GPIO, UART, and FreeRTOS application
 ├── STM32L4S5VITx_FLASH.ld             # 2 MB Flash / 640 KB SRAM memory layout
 ├── docs/
 │   └── stm32_b_l4s5i_iot01a_setup_guide.md
@@ -50,7 +55,29 @@ connection. No wiring is required for the default blink and serial output.
 └── build/debug/                       # Existing debug build outputs
 ```
 
-`include/` is currently reserved for project headers.
+The I2C implementation and example in `include/i2c_bus.hpp` and
+`src/i2c_bus.cpp` are development scaffolding. The current application in
+`src/main.cpp` does not initialize I2C or run an I2C scan.
+
+## Resource ownership and RAII
+
+**RAII** (Resource Acquisition Is Initialization) is a C++ pattern that ties
+the lifetime of a resource to an object's lifetime. The object acquires the
+resource in its constructor and releases it in its destructor.
+
+The RAII wrappers in `include/rtos.hpp` follow this pattern:
+
+- `Task` creates a FreeRTOS task in its constructor and deletes it in its
+  destructor.
+- `Queue` creates a FreeRTOS queue in its constructor and deletes it in its
+  destructor.
+- `Mutex` creates a FreeRTOS mutex in its constructor and deletes it in its
+  destructor.
+- `LockGuard` takes a mutex when constructed and releases it when destroyed,
+  even if the function exits early or throws an exception.
+
+This reduces the risk of leaked tasks, queues, or mutex ownership and keeps
+resource cleanup close to the code that acquires the resource.
 
 ## Build dependencies
 
@@ -59,7 +86,7 @@ The project fetches these pinned dependencies during CMake configuration:
 - STM32CubeL4 **v1.18.1**: CMSIS, startup code, system initialization, and HAL
 - FreeRTOS Kernel **V11.3.3**: ARM CM4F port and Heap 4
 
-CMake is also configured to use the FetchContent cache at `.cache/deps`, which
+The included build commands use the FetchContent cache at `.cache/deps`, which
 keeps downloaded dependencies outside `build/`. The cache is not source code
 maintained in this repository.
 

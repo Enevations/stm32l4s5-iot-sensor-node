@@ -1,9 +1,16 @@
+/** @file main.cpp
+ *  @brief Firmware entry point for the STM32L4S5I-IOT01A blink example.
+ */
+
 #include <cstdio>
 #include <cstring>
 
 #include "stm32l4xx_hal.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "i2c_bus.hpp"
+#include "uart.hpp"
+#include "led.hpp"
 
 #ifndef NDEBUG
 // OpenOCD uses this symbol to determine the priority range for FreeRTOS thread
@@ -13,23 +20,21 @@ __attribute__((used)) int uxTopUsedPriority = configMAX_PRIORITIES - 1;
 }
 #endif
 
-static UART_HandleTypeDef huart1{};
-
 // --- FreeRTOS Kernel Hooks ---
 extern "C" {
 
-// Once the scheduler starts, FreeRTOS owns SysTick; keep the HAL millisecond
-// clock in sync by advancing it from each RTOS tick.
+/** @brief Advances HAL millisecond time from the FreeRTOS tick. */
 void vApplicationTickHook() {
     HAL_IncTick();
 }
 
-// Fail-stop hooks make allocation and stack failures visible during debugging.
+/** @brief Fail-stop hook invoked when FreeRTOS cannot allocate memory. */
 void vApplicationMallocFailedHook() {
     taskDISABLE_INTERRUPTS();
     while (true) {}
 }
 
+/** @brief Fail-stop hook invoked when a task overflow is detected. */
 void vApplicationStackOverflowHook(TaskHandle_t, char*) {
     taskDISABLE_INTERRUPTS();
     while (true) {}
@@ -37,7 +42,12 @@ void vApplicationStackOverflowHook(TaskHandle_t, char*) {
 
 } // extern "C"
 
+static constexpr Led green_led(GPIOB_BASE, GPIO_PIN_14);
+static Uart uart1(USART1, GPIOB_BASE, GPIO_PIN_6, GPIO_PIN_7, GPIO_AF7_USART1, 115200);
+
+
 // --- Hardware Initialization ---
+/** @brief Configures the MSI/PLL clock tree for an 80 MHz system clock. */
 static void system_clock_config() {
     RCC_OscInitTypeDef osc{};
     RCC_ClkInitTypeDef clk{};
@@ -67,64 +77,60 @@ static void system_clock_config() {
     HAL_RCC_ClockConfig(&clk, FLASH_LATENCY_4);
 }
 
+/** @brief Configures GPIO and the USART1 ST-LINK virtual COM port pins. */
 static void gpio_and_uart_init() {
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_USART1_CLK_ENABLE();
-
-    // Configure the board's green LD2 as a low-speed push-pull output.
-    GPIO_InitTypeDef led{};
-    led.Pin = GPIO_PIN_14;
-    led.Mode = GPIO_MODE_OUTPUT_PP;
-    led.Pull = GPIO_NOPULL;
-    led.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &led);
-
-    // Route USART1 to the ST-LINK virtual COM port pins (AF7).
-    GPIO_InitTypeDef uart_pins{};
-    uart_pins.Pin = GPIO_PIN_6 | GPIO_PIN_7;
-    uart_pins.Mode = GPIO_MODE_AF_PP;
-    uart_pins.Pull = GPIO_NOPULL;
-    uart_pins.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    uart_pins.Alternate = GPIO_AF7_USART1;
-    HAL_GPIO_Init(GPIOB, &uart_pins);
-
-    huart1.Instance = USART1;
-    huart1.Init.BaudRate = 115200;
-    huart1.Init.WordLength = UART_WORDLENGTH_8B;
-    huart1.Init.StopBits = UART_STOPBITS_1;
-    huart1.Init.Parity = UART_PARITY_NONE;
-    huart1.Init.Mode = UART_MODE_TX_RX;
-    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-    huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-    huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-    HAL_UART_Init(&huart1);
+    green_led.init();
+    uart1.init();
 }
 
-// --- Application Task ---
-static void blinky_task(void*) {
-    char msg[64];
-    uint32_t count = 0;
+static void heartbeat(void*) {
 
-    // UART writes are synchronous; this simple example logs directly from its task.
-    const char* banner = "\r\nHello Blinky from STM32L4S5!\r\n";
-    HAL_UART_Transmit(&huart1, reinterpret_cast<const uint8_t*>(banner), std::strlen(banner), 100);
+    const char* banner = "\r\nSTM32L4S5I-IOT01A Sensor Node\r\n";
+    uart1.write(banner, std::strlen(banner));
 
-    for (;;) {
-        HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_14);
-        std::snprintf(msg, sizeof(msg), "Blink #%lu (uptime: %lu ms)\r\n", ++count, HAL_GetTick());
-        HAL_UART_Transmit(&huart1, reinterpret_cast<const uint8_t*>(msg), std::strlen(msg), 100);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+    for(;;) {
+        green_led.toggle();
+        rtos::sleep_ms(1000);
     }
 }
 
+static void i2c_task(void*) {
+
+    char msg[64];
+
+    bsp::I2cBus i2c2;
+    if (!i2c2.init()) {
+        for(;;) {
+            std::snprintf(msg, sizeof(msg), "I2C2 init failed\n");
+            uart1.write(msg);
+            rtos::sleep_ms(1000);
+        }
+    }
+
+    for(uint8_t addr = 0x08; addr <= 0x77; ++addr) {
+        if (i2c2.is_device_ready(addr)) {
+            std::snprintf(msg, sizeof(msg), "I2C device found at 0x%02X\n", addr);
+            uart1.write(msg, std::strlen(msg));
+        }
+    }
+
+    for(;;) {
+        rtos::sleep_ms(1000);
+    }
+
+}
+
+/**
+ * @brief Initializes the MCU and starts the FreeRTOS scheduler.
+ * @return This function normally never returns.
+ */
 int main() {
     HAL_Init();
     system_clock_config();
     gpio_and_uart_init();
 
-    // FreeRTOS stack depths are in words (256 words here), not bytes.
-    xTaskCreate(blinky_task, "Blinky", 256, nullptr, tskIDLE_PRIORITY + 1, nullptr);
+    rtos::Task scan_task("I2C Scan", 512, tskIDLE_PRIORITY + 1, i2c_task);
+    rtos::Task heartbeat_task("Heartbeat", 256, tskIDLE_PRIORITY + 2, heartbeat);
     vTaskStartScheduler();
 
     // The scheduler should not return; reaching here indicates startup failure.

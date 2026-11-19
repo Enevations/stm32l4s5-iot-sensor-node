@@ -4,7 +4,7 @@
     {
       "label": "Build STM32 Firmware (Debug)",
       "type": "shell",
-      "command": "cmake -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake -DFETCHCONTENT_BASE_DIR=${workspaceFolder}/.cache/deps && cmake --build build/debug",
+      "command": "if [ ! -f build/debug/build.ninja ]; then cmake -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake -DFETCHCONTENT_BASE_DIR=${workspaceFolder}/.cache/deps; fi && cmake --build build/debug",
       "group": {
         "kind": "build",
         "isDefault": true
@@ -14,7 +14,7 @@
     {
       "label": "Build STM32 Firmware (Release)",
       "type": "shell",
-      "command": "cmake -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake -DFETCHCONTENT_BASE_DIR=${workspaceFolder}/.cache/deps && cmake --build build/release",
+      "command": "if [ ! -f build/release/build.ninja ]; then cmake -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake -DFETCHCONTENT_BASE_DIR=${workspaceFolder}/.cache/deps; fi && cmake --build build/release",
       "group": "build",
       "problemMatcher": ["$gcc"]
     },
