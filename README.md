@@ -153,7 +153,7 @@ Failures stop the system loudly instead of freezing silently:
 Decode a reported PC or LR against the ELF to find the faulting code:
 
 ```sh
-arm-none-eabi-addr2line -e build/debug/stm32l4s5-base.elf -f -C 0x<addr>
+arm-none-eabi-addr2line -e build/debug/stm32l4s5-iot-sensor-node.elf -f -C 0x<addr>
 ```
 
 The hard fault handler runs on the untouched MSP stack, so the report survives
@@ -237,7 +237,7 @@ and watch the serial port:
    & "D:/xpack-openocd-0.12.0-7/bin/openocd.exe" `
      -f interface/stlink.cfg `
      -f target/stm32l4x.cfg `
-     -c "program dist/selftest/stm32l4s5-base.elf verify reset exit"
+     -c "program dist/selftest/stm32l4s5-iot-sensor-node.elf verify reset exit"
    ```
 
 3. Open the serial terminal as described in
@@ -340,10 +340,10 @@ host unit tests). Debug and release build directories are independent.
 
 A successful build creates:
 
-- `build/debug/stm32l4s5-base.elf` or `build/release/stm32l4s5-base.elf`
-- `build/debug/stm32l4s5-base.bin` or `build/release/stm32l4s5-base.bin`
-- `build/debug/stm32l4s5-base.hex` or `build/release/stm32l4s5-base.hex`
-- `build/<configuration>/stm32l4s5-base.map`
+- `build/debug/stm32l4s5-iot-sensor-node.elf` or `build/release/stm32l4s5-iot-sensor-node.elf`
+- `build/debug/stm32l4s5-iot-sensor-node.bin` or `build/release/stm32l4s5-iot-sensor-node.bin`
+- `build/debug/stm32l4s5-iot-sensor-node.hex` or `build/release/stm32l4s5-iot-sensor-node.hex`
+- `build/<configuration>/stm32l4s5-iot-sensor-node.map`
 - `build/<configuration>/compile_commands.json`
 
 The post-build step also reports the ELF Flash and RAM usage. Because `build/`
@@ -360,9 +360,9 @@ it are visible inside the container only — the Windows host cannot read them.
 Every build therefore mirrors its images to `dist/<variant>/` in the workspace
 root (which *is* shared with Windows) via a CMake post-build step:
 
-- `dist/debug/stm32l4s5-base.elf`
-- `dist/release/stm32l4s5-base.elf`
-- `dist/selftest/stm32l4s5-base.elf`
+- `dist/debug/stm32l4s5-iot-sensor-node.elf`
+- `dist/release/stm32l4s5-iot-sensor-node.elf`
+- `dist/selftest/stm32l4s5-iot-sensor-node.elf`
 
 Each folder also contains the `.bin` and `.hex` images. Then open a
 **PowerShell terminal on the Windows host** in the repository root and run
@@ -372,7 +372,7 @@ xPack OpenOCD:
 & "D:/xpack-openocd-0.12.0-7/bin/openocd.exe" `
   -f interface/stlink.cfg `
   -f target/stm32l4x.cfg `
-  -c "program dist/debug/stm32l4s5-base.elf verify reset exit"
+  -c "program dist/debug/stm32l4s5-iot-sensor-node.elf verify reset exit"
 ```
 
 Flash `dist/release/...` or `dist/selftest/...` instead for the release or

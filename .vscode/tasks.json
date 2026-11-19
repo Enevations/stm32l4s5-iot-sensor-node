@@ -45,7 +45,7 @@
     {
       "label": "Clean All Builds (Keep FetchContent Cache)",
       "type": "shell",
-      "command": "rm -rf build/debug build/release",
+      "command": "rm -rf build/debug build/release build/selftest build/host-tests",
       "problemMatcher": []
     },
     {

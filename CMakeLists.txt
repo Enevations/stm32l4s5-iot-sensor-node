@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(stm32l4s5-base LANGUAGES C CXX ASM)
+project(stm32l4s5-iot-sensor-node LANGUAGES C CXX ASM)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)

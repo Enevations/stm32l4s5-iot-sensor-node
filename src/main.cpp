@@ -136,7 +136,7 @@ void vApplicationStackOverflowHook(TaskHandle_t, char* task_name) {
  * Runs in handler mode on the untouched MSP stack, so it stays safe even when
  * the fault was caused by a task overflowing its own (PSP) stack. Prints the
  * stacked PC plus fault-status registers; decode PC with:
- *   arm-none-eabi-addr2line -e build/debug/stm32l4s5-base.elf -f -C 0x<PC>
+ *   arm-none-eabi-addr2line -e build/debug/stm32l4s5-iot-sensor-node.elf -f -C 0x<PC>
  */
 [[gnu::naked]] void HardFault_Handler() {
     __asm volatile(
