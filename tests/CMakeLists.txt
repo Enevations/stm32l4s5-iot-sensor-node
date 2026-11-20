@@ -10,6 +10,7 @@ enable_testing()
 set(TEST_SOURCES
     test_split_float.cpp
     test_hts221.cpp
+    test_lps22hb.cpp
     test_post_check.cpp
     test_stall_tracker.cpp
 )
@@ -21,7 +22,8 @@ set(TEST_SOURCES
 add_executable(unit_tests
     host_main.cpp
     ${TEST_SOURCES}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/humidity_temp_snsr.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/hts221_sensor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/lps22hb_sensor.cpp
 )
 target_include_directories(unit_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include

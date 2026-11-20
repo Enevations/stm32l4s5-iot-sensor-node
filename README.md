@@ -4,9 +4,9 @@
 
 This repository is a C++17 and FreeRTOS firmware for the STMicroelectronics
 **B-L4S5I-IOT01A** discovery board. It reads the onboard HTS221
-humidity/temperature sensor over I2C2 and prints sensor telemetry over the
-ST-LINK virtual COM port, while a heartbeat task drives LED LD2 and reports
-per-task stack margins.
+humidity/temperature and LPS22HB barometric sensors over I2C2 and prints
+sensor telemetry over the ST-LINK virtual COM port, while a heartbeat task
+drives LED LD2 and reports per-task stack margins.
 
 ## What it does
 
@@ -21,12 +21,15 @@ At startup, `src/main.cpp`:
 6. Creates three FreeRTOS tasks and starts the scheduler:
    - **Heartbeat** (priority 2): blinks LD2 every second (fast blinks on
      hardware fault) and prints per-task stack high-water marks every ~5 s.
-   - **SensorTask** (priority 1): initializes the HTS221 (WHO_AM_I check,
-     factory calibration, 1 Hz ODR with BDU), retrying with exponential
-     backoff and a logged failure reason until it succeeds, then samples it
-     once per second.
-   - **TelemetryTask** (priority 1): prints each sample as
-     `[<uptime> ms] Temp: <t>.<tt> C | Humidity: <h>.<hh> %`.
+   - **SensorTask** (priority 1): initializes each registered sensor
+     independently (identity check, calibration/configuration), retrying with
+     exponential backoff and a logged failure reason until it succeeds, then
+     samples every ready sensor once per second into a merged reading
+     (HTS221: humidity + temperature; LPS22HB: pressure + temperature).
+   - **TelemetryTask** (priority 1): prints one line per valid channel of the
+     merged reading — `[<uptime> ms] Temp: <t>.<tt> C`,
+     `[<uptime> ms] Humidity: <h>.<hh> %`,
+     `[<uptime> ms] Pressure: <p>.<pp> hPa`.
 
 The FreeRTOS SysTick runs at 1 kHz. The tick hook calls `HAL_IncTick()`. The
 firmware also has fail-stop hooks for allocation failure, stack overflow, and
@@ -66,23 +69,28 @@ connection. No wiring is required.
 │   ├── FreeRTOSConfig.h               # FreeRTOS features and interrupt priorities
 │   └── stm32l4xx_hal_conf.h           # Enabled HAL modules
 ├── include/
-│   ├── humidity_temp_snsr.hpp         # HTS221 humidity/temperature driver interface
+│   ├── hts221_sensor.hpp              # HTS221 humidity/temperature sensor (implements ISensor)
 │   ├── i2c_bus.hpp                    # STM32 I2C2 bus (implements II2cBus)
 │   ├── i2c_interface.hpp              # HAL-free II2cBus abstraction
 │   ├── led.hpp                        # GPIO LED wrapper
+│   ├── lps22hb_sensor.hpp             # LPS22HB barometric sensor (implements ISensor)
 │   ├── post_check.hpp                 # Pure I2C power-on self-test probe
 │   ├── rtos.hpp                       # FreeRTOS C++ RAII wrappers
+│   ├── sensor_interface.hpp           # HAL-free ISensor abstraction + shared sample/InitStatus
 │   ├── split_float.hpp                # Constexpr telemetry float formatting (host-testable)
+│   ├── stall_tracker.hpp              # Telemetry queue drop/recovery policy (host-testable)
 │   └── uart.hpp                       # Thread-safe UART wrapper
 ├── src/
-│   ├── humidity_temp_snsr.cpp         # HTS221 calibration and sample conversion
+│   ├── hts221_sensor.cpp              # HTS221 calibration and sample conversion
 │   ├── i2c_bus.cpp                    # I2C2 HAL setup and serialized transactions
+│   ├── lps22hb_sensor.cpp             # LPS22HB pressure/temperature conversion
 │   └── main.cpp                       # Clock, GPIO, tasks, and telemetry application
 ├── tests/
 │   ├── CMakeLists.txt                 # Host + cross-compiled test targets
 │   ├── fake_i2c_bus.hpp               # Emulated I2C bus with canned registers and NACKs
 │   ├── host_main.cpp                  # Entry point for host-built test binary
 │   ├── test_hts221.cpp                # HTS221 driver suite
+│   ├── test_lps22hb.cpp               # LPS22HB driver suite
 │   ├── test_post_check.cpp            # POST probe suite
 │   └── test_split_float.cpp           # Telemetry formatting suite
 ├── STM32L4S5VITx_FLASH.ld             # 2 MB Flash / 640 KB SRAM memory layout
@@ -96,16 +104,39 @@ connection. No wiring is required.
 
 ## Application architecture
 
-`AppContext` (defined in `src/main.cpp`) owns the shared state: the I2C bus
-wrapper and the telemetry queue. All task-to-task communication flows through
-the queue, and the I2C/UART wrappers serialize access with their own mutexes
-(`rtos::SchedulerLock`), so no task ever holds two locks at once.
+`AppContext` (defined in `src/main.cpp`) owns the shared state: the I2C bus,
+the sensor objects, and the telemetry queue. All task-to-task communication
+flows through the queue, and the I2C/UART wrappers serialize access with their
+own mutexes (`rtos::SchedulerLock`), so no task ever holds two locks at once.
 
-The HTS221 driver (`drivers::HumidityTempSnsr`) reads the factory calibration
-coefficients (0x30-0x3F) once during `init()` and converts raw ADC output with
-ST's linear-interpolation formula in `read()`. Register block reads set the
-auto-increment bit, and block data update (BDU) is enabled so humidity and
-temperature are always read as a consistent pair.
+### Sensors
+
+Sensors are one implementation of `drivers::ISensor`
+(include/sensor_interface.hpp) per *physical device* — never per measurement
+channel, since a device's channels share its identity check, calibration
+image, configuration register, and burst read:
+
+- `Hts221Sensor` (0x5F): humidity + temperature
+- `Lps22hbSensor` (0x5D): barometric pressure + die temperature
+
+`sensor_task` iterates the registered `ISensor` list: each sensor initializes
+independently with its own retry backoff (2 s → 4 s → 8 s cap), so one failed
+or absent sensor never blocks the others; a recovered init clears the fault
+flag only if this task raised it. Each cycle reads every ready sensor into a
+merged `drivers::EnvironmentalSample` — per-channel `valid_*` flags record
+which sensor produced which field — and queues it for telemetry.
+
+Adding a sensor means implementing `drivers::ISensor` and adding it to the
+list in `sensor_task`; neither the task nor the telemetry code changes. The
+LPS22HB driver on this board is the working example (WHO_AM_I 0x0F → 0xB1,
+CTRL_REG1 0x10 with 1 Hz ODR + BDU, pressure = 24-bit raw/4096 hPa,
+temperature = 16-bit raw/100 °C).
+
+The HTS221 driver reads the factory calibration coefficients (0x30-0x3F) once
+during `init()`, precomputes the interpolation slopes, and converts raw ADC
+output in `read()`. Register block reads set the auto-increment bit, and
+block data update (BDU) is enabled so humidity and temperature are always
+read as a consistent pair.
 
 **Important pitfall:** objects referenced by FreeRTOS tasks must not live in
 `main()`'s stack frame. The Cortex-M4F port resets the MSP from the vector
@@ -241,9 +272,9 @@ cmake -B build/selftest -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/selftest
 ```
 
-Expected serial output: `Self-test PASS (split_float, hts221, post_check,
-stall_tracker, queue probe)` after the banner; a failing suite prints its
-case after `[FATAL] Self-test ... FAILED:` and halts.
+Expected serial output: `Self-test PASS (split_float, hts221, lps22hb,
+post_check, stall_tracker, queue probe)` after the banner; a failing suite
+prints its case after `[FATAL] Self-test ... FAILED:` and halts.
 
 #### Running the self-test on the target
 
@@ -277,6 +308,7 @@ and watch the serial port:
 |-------|------------------|
 | `split_float` | Sign preservation in (-1, 0), rounding vs truncation, fraction carry, invariants across a value sweep |
 | `hts221` | WHO_AM_I check, calibration-image load, degenerate-calibration guard, linear interpolation at midpoints and endpoints, negative temperatures, humidity clamping, invalid sample on bus loss |
+| `lps22hb` | WHO_AM_I check, pressure conversion (hPa), 24-bit sign extension, negative values, per-channel valid flags, invalid sample on bus loss |
 | `post_check` | All-devices-present pass, missing-device detection with reported address, probe stop at first failure, empty list |
 | `stall_tracker` | Consecutive-drop counting, reset on recovery, fresh stall after recovery, 1000-sample stall tracking |
 | queue probe (target only) | A full `rtos::Queue` rejects a zero-tick send and draining makes room again — the bounded-send mechanism the drop policy relies on |
@@ -458,19 +490,24 @@ Open the board's ST-LINK virtual COM port with a serial terminal:
 - Flow control: none
 
 You should see a startup banner, the I2C self-test result, and then sensor
-telemetry once per second with stack reports every ~5 s:
+telemetry once per second (one line per valid channel, plus a pressure line
+from the LPS22HB) with stack reports every ~5 s:
 
 ```text
 [Post Success] All expected devices found
 
 STM32L4S5I-IOT01A Sensor Node
-[72 ms] Temp: 31.71 C | Humidity: 46.21 %
-[1072 ms] Temp: 31.65 C | Humidity: 46.11 %
+[72 ms] Temp: 31.71 C
+[72 ms] Humidity: 46.21 %
+[72 ms] Pressure: 1013.25 hPa
+[1072 ms] Temp: 31.65 C
+[1072 ms] Humidity: 46.11 %
 Stack free words: HB=332 SN=930 TM=880
 ```
 
-Sensor read failures print `Sensor read failed! Try again.` and the firmware
-continues sampling. Press the board reset button to restart the application.
+Sensor read failures print `Sensor 0x%02X read failed; retrying next cycle`
+and the firmware continues sampling the other sensors. Press the board reset
+button to restart the application.
 
 ## Cleaning
 

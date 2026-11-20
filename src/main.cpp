@@ -18,15 +18,18 @@
 #include "post_check.hpp"
 #include "uart.hpp"
 #include "led.hpp"
-#include "humidity_temp_snsr.hpp"
+#include "sensor_interface.hpp"
+#include "hts221_sensor.hpp"
+#include "lps22hb_sensor.hpp"
 #include "split_float.hpp"
 #include "stall_tracker.hpp"
 
 #ifdef STM32_SELF_TEST
-// Provided by tests/*.cpp, compiled into the firmware when CMake is
+// Provided by tests/*.cpp, compil ed into the firmware when CMake is
 // configured with -DSTM32_SELF_TEST=ON.
 extern bool run_split_float_tests(char* error_buffer, std::size_t error_size);
 extern bool run_hts221_tests(char* error_buffer, std::size_t error_size);
+extern bool run_lps22hb_tests(char* error_buffer, std::size_t error_size);
 extern bool run_post_check_tests(char* error_buffer, std::size_t error_size);
 extern bool run_stall_tracker_tests(char* error_buffer, std::size_t error_size);
 #endif
@@ -46,14 +49,16 @@ enum class BoardState : uint8_t {
     HardwareFault = 1,
 };
 
+/// @brief One telemetry queue item: a merged sensor reading plus its stamp.
 struct TelemetryMessage {
+    drivers::EnvironmentalSample sample;
     uint32_t timestamp_ms{0};
-    float temperature_c{0.0f};
-    float humidity_pct{0.0f};
 };
 
 struct AppContext {
     bsp::I2cBus i2c_bus;
+    drivers::Hts221Sensor hts221{i2c_bus};
+    drivers::Lps22hbSensor lps22hb{i2c_bus};
     rtos::Queue<TelemetryMessage> telemetry_queue{8};
 };
 
@@ -321,67 +326,123 @@ static const char* init_status_text(drivers::InitStatus status) noexcept {
 }
 
 /**
- * @brief Samples the HTS221 humidity/temperature sensor once per second.
+ * @brief Brings every registered sensor up and samples them once per second.
  *
- * Loads the sensor's factory calibration during init. A failed init is
- * flagged as a hardware fault (fast heartbeat blinks) and retried with
- * exponential backoff (2 s -> 4 s -> 8 s cap) so transient faults recover;
- * once init succeeds, the fault state is cleared again. Valid samples are
- * queued for the telemetry task with a bounded wait: if the queue stays full
- * (telemetry stalled), the sample is dropped and logged so sampling never
- * freezes. Failed reads are logged and retried on the next cycle.
+ * Each sensor initializes independently with its own retry backoff (2 s -> 4 s
+ * -> 8 s cap): one failed sensor never blocks the others, and recovery clears
+ * the fault flag only when every sensor this task flagged is up again. Ready
+ * sensors are read each cycle into a merged sample (last sensor wins on
+ * shared channels such as temperature), which is queued for the telemetry
+ * task with a bounded wait: a stalled telemetry task drops samples (logged
+ * with a running total) instead of freezing sampling. Failed reads are
+ * logged and retried on the next cycle.
  *
- * @param raw_ctx Pointer to the AppContext owning the I2C bus and queue.
+ * Adding a sensor means implementing drivers::ISensor and adding it to the
+ * list below — this task never changes.
+ *
+ * @param raw_ctx Pointer to the AppContext owning the sensors and queue.
  */
 static void sensor_task(void* raw_ctx) {
     auto* ctx = static_cast<AppContext*>(raw_ctx);
-    drivers::HumidityTempSnsr sensor(ctx->i2c_bus);
-    char msg[112];
-    char log_line[96];
 
-    uint32_t attempts = 0;
+    constexpr std::size_t kSensorCount = 2;
+    drivers::ISensor* const sensors[kSensorCount] = { &ctx->hts221, &ctx->lps22hb };
+
+    bool ready[kSensorCount]{};
+    uint32_t attempts[kSensorCount]{};
+    uint32_t next_try_ms[kSensorCount]{};
     bool fault_flagged = false;
-    drivers::InitStatus status = drivers::InitStatus::Ok;
-    while ((status = sensor.init()) != drivers::InitStatus::Ok) {
-        ++attempts;
-        // Exponential backoff: 2 s, 4 s, then capped at 8 s per retry.
-        const uint32_t backoff_ms = 1000U << ((attempts < 3U) ? attempts : 3U);
-        fault_flagged = true;
-        gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
-
-        const int len = std::snprintf(msg, sizeof(msg),
-            "Sensor init failed (attempt %lu: %s); retrying in %lu s\r\n",
-            static_cast<unsigned long>(attempts),
-            init_status_text(status),
-            static_cast<unsigned long>(backoff_ms / 1000U));
-        if (len > 0) {
-            uart1.write(msg, static_cast<std::size_t>(len));
-        }
-        rtos::sleep_ms(backoff_ms);
-    }
-
-    if (fault_flagged) {
-        // Clear the fault only when this task raised it, so POST or clock
-        // failures reported elsewhere are not masked by sensor recovery.
-        gboard_state.store(BoardState::Healthy, std::memory_order_release);
-        const int len = std::snprintf(msg, sizeof(msg),
-            "Sensor init succeeded (attempt %lu)\r\n",
-            static_cast<unsigned long>(attempts + 1U));
-        if (len > 0) {
-            uart1.write(msg, static_cast<std::size_t>(len));
-        }
-    }
-
     telemetry::StallTracker stall;
 
+    char msg[128];
+    char log_line[96];
+
     for(;;) {
-        const auto sample = sensor.read();
-        if (sample.valid) {
-            TelemetryMessage msg{
-                .timestamp_ms = HAL_GetTick(),
-                .temperature_c = sample.temperature_c,
-                .humidity_pct = sample.humidity_pct
-            };
+        const uint32_t now = HAL_GetTick();
+
+        // Bring up any sensor whose retry window has elapsed.
+        for (std::size_t i = 0; i < kSensorCount; ++i) {
+            if (ready[i] || now < next_try_ms[i]) {
+                continue;
+            }
+            ++attempts[i];
+            const auto status = sensors[i]->init();
+            if (status == drivers::InitStatus::Ok) {
+                ready[i] = true;
+                const int len = std::snprintf(msg, sizeof(msg),
+                    "Sensor 0x%02X ready (attempt %lu)\r\n",
+                    sensors[i]->i2c_address(), static_cast<unsigned long>(attempts[i]));
+                if (len > 0) {
+                    uart1.write(msg, static_cast<std::size_t>(len));
+                }
+            }
+            else {
+                fault_flagged = true;
+                gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
+                const uint32_t backoff_ms = 1000U << ((attempts[i] < 3U) ? attempts[i] : 3U);
+                next_try_ms[i] = now + backoff_ms;
+                const int len = std::snprintf(msg, sizeof(msg),
+                    "Sensor 0x%02X init failed (attempt %lu: %s); retrying in %lu s\r\n",
+                    sensors[i]->i2c_address(),
+                    static_cast<unsigned long>(attempts[i]),
+                    init_status_text(status),
+                    static_cast<unsigned long>(backoff_ms / 1000U));
+                if (len > 0) {
+                    uart1.write(msg, static_cast<std::size_t>(len));
+                }
+            }
+        }
+
+        // Clear the fault only when every sensor this task flagged is up, so
+        // POST or clock failures reported elsewhere are not masked.
+        if (fault_flagged) {
+            bool all_ready = true;
+            for (std::size_t i = 0; i < kSensorCount; ++i) {
+                all_ready = all_ready && ready[i];
+            }
+            if (all_ready) {
+                fault_flagged = false;
+                gboard_state.store(BoardState::Healthy, std::memory_order_release);
+                uart1.write("All sensors ready\r\n");
+            }
+        }
+
+        // Sample every ready sensor into one merged reading.
+        drivers::EnvironmentalSample merged{};
+        bool any_channel = false;
+        const uint32_t stamp = HAL_GetTick();
+        for (std::size_t i = 0; i < kSensorCount; ++i) {
+            if (!ready[i]) {
+                continue;
+            }
+            const auto part = sensors[i]->read();
+            if (part.valid_temperature) {
+                merged.temperature_c = part.temperature_c;
+                merged.valid_temperature = true;
+                any_channel = true;
+            }
+            if (part.valid_humidity) {
+                merged.humidity_pct = part.humidity_pct;
+                merged.valid_humidity = true;
+                any_channel = true;
+            }
+            if (part.valid_pressure) {
+                merged.pressure_hpa = part.pressure_hpa;
+                merged.valid_pressure = true;
+                any_channel = true;
+            }
+            if (!part.valid_temperature && !part.valid_humidity && !part.valid_pressure) {
+                const int len = std::snprintf(log_line, sizeof(log_line),
+                    "Sensor 0x%02X read failed; retrying next cycle\r\n",
+                    sensors[i]->i2c_address());
+                if (len > 0) {
+                    uart1.write(log_line, static_cast<std::size_t>(len));
+                }
+            }
+        }
+
+        if (any_channel) {
+            TelemetryMessage msg{merged, stamp};
             // A stalled telemetry task must not freeze sampling: wait at most
             // 2 s for queue space, then drop the sample and keep measuring.
             if (ctx->telemetry_queue.send(msg, pdMS_TO_TICKS(2000))) {
@@ -406,42 +467,57 @@ static void sensor_task(void* raw_ctx) {
                 }
             }
         }
-        else {
-            uart1.write("Sensor read failed! Try again.\n");
-        }
         rtos::sleep_ms(1000);
     }
 }
 
 /**
- * @brief Prints queued sensor samples as text lines over UART1.
+ * @brief Prints one telemetry line for a single sample channel.
  *
- * Blocks on the telemetry queue and formats each sample with integer-only
- * math (see include/split_float.hpp) to avoid pulling the newlib float
- * formatter into the firmware image.
+ * @param stamp_ms Uptime of the reading cycle.
+ * @param label Channel label, e.g. "Temp".
+ * @param unit Unit suffix, e.g. "C".
+ * @param value Channel value, printed with two fractional digits.
+ */
+static void print_channel(uint32_t stamp_ms, const char* label, const char* unit, float value) {
+    const SplitFloat split = split_float(value);
+    char msg[96];
+    const int len = std::snprintf(msg, sizeof(msg), "[%lu ms] %s: %s%d.%02d %s\r\n",
+                                  static_cast<unsigned long>(stamp_ms),
+                                  label,
+                                  split.negative ? "-" : "",
+                                  split.whole,
+                                  split.frac,
+                                  unit);
+    if (len > 0) {
+        uart1.write(msg, static_cast<std::size_t>(len));
+    }
+}
+
+/**
+ * @brief Prints queued sensor readings as text lines over UART1.
+ *
+ * Blocks on the telemetry queue and prints one line per valid channel of the
+ * merged sample, formatting values with integer-only math (see
+ * include/split_float.hpp) to avoid pulling the newlib float formatter into
+ * the firmware image.
  *
  * @param raw_ctx Pointer to the AppContext owning the telemetry queue.
  */
 static void telemetry_task(void* raw_ctx) {
     auto* ctx = static_cast<AppContext*>(raw_ctx);
-    TelemetryMessage sample{};
-    char msg[96];
+    TelemetryMessage msg{};
 
     for(;;) {
-        if (ctx->telemetry_queue.receive(sample)) {
-            const SplitFloat temp = split_float(sample.temperature_c);
-            const SplitFloat hum  = split_float(sample.humidity_pct);
-
-            const int len = std::snprintf(
-                msg, sizeof(msg),
-                "[%lu ms] Temp: %s%d.%02d C | Humidity: %d.%02d %%\r\n",
-                sample.timestamp_ms,
-                (temp.negative ? "-" : ""), temp.whole, temp.frac,
-                hum.whole, hum.frac
-            );
-
-            if (len > 0) {
-                uart1.write(msg, static_cast<std::size_t>(len));
+        if (ctx->telemetry_queue.receive(msg)) {
+            if (msg.sample.valid_temperature) {
+                print_channel(msg.timestamp_ms, "Temp", "C", msg.sample.temperature_c);
+            }
+            if (msg.sample.valid_humidity) {
+                print_channel(msg.timestamp_ms, "Humidity", "%", msg.sample.humidity_pct);
+            }
+            if (msg.sample.valid_pressure) {
+                print_channel(msg.timestamp_ms, "Pressure", "hPa", msg.sample.pressure_hpa);
             }
         }
     }
@@ -508,6 +584,12 @@ int main() {
             uart1.write(self_test_error, std::strlen(self_test_error));
             uart1.write("\r\n");
         }
+        if (!run_lps22hb_tests(self_test_error, sizeof(self_test_error))) {
+            self_test_ok = false;
+            uart1.write("[FATAL] Self-test lps22hb FAILED: ");
+            uart1.write(self_test_error, std::strlen(self_test_error));
+            uart1.write("\r\n");
+        }
         if (!run_post_check_tests(self_test_error, sizeof(self_test_error))) {
             self_test_ok = false;
             uart1.write("[FATAL] Self-test post_check FAILED: ");
@@ -540,7 +622,7 @@ int main() {
         if (!self_test_ok) {
             while (true) {}
         }
-        uart1.write("Self-test PASS (split_float, hts221, post_check, stall_tracker, queue probe)\r\n");
+        uart1.write("Self-test PASS (split_float, hts221, lps22hb, post_check, stall_tracker, queue probe)\r\n");
     }
 #endif
 
