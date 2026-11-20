@@ -98,6 +98,7 @@ if(STM32_SELF_TEST)
     target_sources(${PROJECT_NAME}.elf PRIVATE
         tests/test_split_float.cpp
         tests/test_hts221.cpp
+        tests/test_lps22hb.cpp
         tests/test_post_check.cpp
         tests/test_stall_tracker.cpp
     )

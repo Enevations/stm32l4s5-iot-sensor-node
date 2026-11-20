@@ -14,7 +14,7 @@
 #include <cstring>
 
 #include "fake_i2c_bus.hpp"
-#include "humidity_temp_snsr.hpp"
+#include "hts221_sensor.hpp"
 
 namespace {
 
@@ -89,8 +89,8 @@ bool run_hts221_tests(char* error_buffer, std::size_t error_size) {
     // Init: correct identity and sane calibration succeed.
     {
         test::FakeI2cBus bus;
-        configure_hts221(bus.add_device(drivers::HumidityTempSnsr::kI2cAddress));
-        drivers::HumidityTempSnsr sensor(bus);
+        configure_hts221(bus.add_device(drivers::Hts221Sensor::kI2cAddress));
+        drivers::Hts221Sensor sensor(bus);
         expect_true(sensor.init() == drivers::InitStatus::Ok,
                     "init succeeds with valid image", error_buffer, error_size);
     }
@@ -98,10 +98,10 @@ bool run_hts221_tests(char* error_buffer, std::size_t error_size) {
     // Init: wrong WHO_AM_I fails with a specific reason.
     {
         test::FakeI2cBus bus;
-        test::FakeI2cDevice& device = bus.add_device(drivers::HumidityTempSnsr::kI2cAddress);
+        test::FakeI2cDevice& device = bus.add_device(drivers::Hts221Sensor::kI2cAddress);
         configure_hts221(device);
         device.at(0x0F) = 0xFF;
-        drivers::HumidityTempSnsr sensor(bus);
+        drivers::Hts221Sensor sensor(bus);
         expect_true(sensor.init() == drivers::InitStatus::WhoAmIMismatch,
                     "init rejects wrong WHO_AM_I", error_buffer, error_size);
     }
@@ -109,7 +109,7 @@ bool run_hts221_tests(char* error_buffer, std::size_t error_size) {
     // Init: missing device (NACK) fails with a bus error.
     {
         test::FakeI2cBus bus;
-        drivers::HumidityTempSnsr sensor(bus);
+        drivers::Hts221Sensor sensor(bus);
         expect_true(sensor.init() == drivers::InitStatus::BusError,
                     "init fails on absent device", error_buffer, error_size);
     }
@@ -117,11 +117,11 @@ bool run_hts221_tests(char* error_buffer, std::size_t error_size) {
     // Init: degenerate calibration (division guard) fails with a specific reason.
     {
         test::FakeI2cBus bus;
-        test::FakeI2cDevice& device = bus.add_device(drivers::HumidityTempSnsr::kI2cAddress);
+        test::FakeI2cDevice& device = bus.add_device(drivers::Hts221Sensor::kI2cAddress);
         configure_hts221(device);
         device.at(0x3E) = 0x00; // T1_OUT = T0_OUT = 0
         device.at(0x3F) = 0x00;
-        drivers::HumidityTempSnsr sensor(bus);
+        drivers::Hts221Sensor sensor(bus);
         expect_true(sensor.init() == drivers::InitStatus::InvalidCalibration,
                     "init rejects degenerate calibration", error_buffer, error_size);
     }
@@ -129,14 +129,14 @@ bool run_hts221_tests(char* error_buffer, std::size_t error_size) {
     // Read: linear interpolation at calibration midpoints.
     {
         test::FakeI2cBus bus;
-        test::FakeI2cDevice& device = bus.add_device(drivers::HumidityTempSnsr::kI2cAddress);
+        test::FakeI2cDevice& device = bus.add_device(drivers::Hts221Sensor::kI2cAddress);
         configure_hts221(device);
-        drivers::HumidityTempSnsr sensor(bus);
+        drivers::Hts221Sensor sensor(bus);
         expect_true(sensor.init() == drivers::InitStatus::Ok, "init for read test", error_buffer, error_size);
 
         set_output_registers(device, 800, 400); // halfway between both points
         const auto sample = sensor.read();
-        expect_true(sample.valid, "sample at midpoint is valid", error_buffer, error_size);
+        expect_true(sample.valid_temperature && sample.valid_humidity, "sample at midpoint is valid", error_buffer, error_size);
         expect_near(sample.humidity_pct, 66.0f, "humidity midpoint 66 %RH", error_buffer, error_size);
         expect_near(sample.temperature_c, 50.0f, "temperature midpoint 50 C", error_buffer, error_size);
 
@@ -155,9 +155,9 @@ bool run_hts221_tests(char* error_buffer, std::size_t error_size) {
     // Read: negative temperature keeps its sign.
     {
         test::FakeI2cBus bus;
-        test::FakeI2cDevice& device = bus.add_device(drivers::HumidityTempSnsr::kI2cAddress);
+        test::FakeI2cDevice& device = bus.add_device(drivers::Hts221Sensor::kI2cAddress);
         configure_hts221(device);
-        drivers::HumidityTempSnsr sensor(bus);
+        drivers::Hts221Sensor sensor(bus);
         expect_true(sensor.init() == drivers::InitStatus::Ok, "init for negative test", error_buffer, error_size);
 
         set_output_registers(device, 400, -400);
@@ -169,9 +169,9 @@ bool run_hts221_tests(char* error_buffer, std::size_t error_size) {
     // Read: humidity clamped to the physical range.
     {
         test::FakeI2cBus bus;
-        test::FakeI2cDevice& device = bus.add_device(drivers::HumidityTempSnsr::kI2cAddress);
+        test::FakeI2cDevice& device = bus.add_device(drivers::Hts221Sensor::kI2cAddress);
         configure_hts221(device);
-        drivers::HumidityTempSnsr sensor(bus);
+        drivers::Hts221Sensor sensor(bus);
         expect_true(sensor.init() == drivers::InitStatus::Ok, "init for clamp test", error_buffer, error_size);
 
         set_output_registers(device, -4000, 0);
@@ -186,14 +186,14 @@ bool run_hts221_tests(char* error_buffer, std::size_t error_size) {
     // Read: bus error produces an invalid sample, not a crash.
     {
         test::FakeI2cBus bus;
-        test::FakeI2cDevice& device = bus.add_device(drivers::HumidityTempSnsr::kI2cAddress);
+        test::FakeI2cDevice& device = bus.add_device(drivers::Hts221Sensor::kI2cAddress);
         configure_hts221(device);
-        drivers::HumidityTempSnsr sensor(bus);
+        drivers::Hts221Sensor sensor(bus);
         expect_true(sensor.init() == drivers::InitStatus::Ok, "init for bus-error test", error_buffer, error_size);
 
-        bus.remove_device(drivers::HumidityTempSnsr::kI2cAddress);
+        bus.remove_device(drivers::Hts221Sensor::kI2cAddress);
         const auto sample = sensor.read();
-        expect_true(!sample.valid, "read after bus loss is invalid", error_buffer, error_size);
+        expect_true(!sample.valid_humidity && !sample.valid_temperature, "read after bus loss is invalid", error_buffer, error_size);
     }
 
     return failures == 0U;
