@@ -24,12 +24,8 @@ jobs:
         run: ctest --test-dir build/host-tests --output-on-failure
 
   firmware:
-    name: Firmware (${{ matrix.variant }})
+    name: Firmware (debug + release + selftest)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [debug, release, selftest]
     steps:
       - uses: actions/checkout@v5
 
@@ -49,31 +45,27 @@ jobs:
           key: fetchcontent-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: fetchcontent-
 
-      - name: Configure firmware (${{ matrix.variant }})
+      - name: Build firmware variants
         run: |
-          args=(-G Ninja)
-          case "${{ matrix.variant }}" in
-            debug)    args+=(-DCMAKE_BUILD_TYPE=Debug) ;;
-            release)  args+=(-DCMAKE_BUILD_TYPE=Release) ;;
-            selftest) args+=(-DCMAKE_BUILD_TYPE=Debug -DSTM32_SELF_TEST=ON) ;;
-          esac
-          cmake -B "build/${{ matrix.variant }}" -S . "${args[@]}" \
-            -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
-            -DFETCHCONTENT_BASE_DIR="$PWD/.cache/deps"
-
-      - name: Build firmware (${{ matrix.variant }})
-        run: cmake --build "build/${{ matrix.variant }}" -j
-
-      - name: Verify flashed artifacts
-        run: |
-          test -f "dist/${{ matrix.variant }}/stm32l4s5-iot-sensor-node.elf"
-          test -f "dist/${{ matrix.variant }}/stm32l4s5-iot-sensor-node.bin"
-          test -f "dist/${{ matrix.variant }}/stm32l4s5-iot-sensor-node.hex"
+          build_variant() {
+            local name="$1"
+            shift
+            cmake -B "build/$name" -S . -G Ninja "$@" \
+              -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi.cmake \
+              -DFETCHCONTENT_BASE_DIR="$PWD/.cache/deps"
+            cmake --build "build/$name" -j
+            test -f "dist/$name/stm32l4s5-iot-sensor-node.elf"
+            test -f "dist/$name/stm32l4s5-iot-sensor-node.bin"
+            test -f "dist/$name/stm32l4s5-iot-sensor-node.hex"
+          }
+          build_variant debug    -DCMAKE_BUILD_TYPE=Debug
+          build_variant release  -DCMAKE_BUILD_TYPE=Release
+          build_variant selftest -DCMAKE_BUILD_TYPE=Debug -DSTM32_SELF_TEST=ON
 
       - name: Upload flashing artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: stm32l4s5-${{ matrix.variant }}
-          path: dist/${{ matrix.variant }}/
+          name: stm32l4s5-firmware-images
+          path: dist/
           retention-days: 7
           if-no-files-found: error

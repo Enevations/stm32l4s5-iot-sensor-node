@@ -281,9 +281,11 @@ regressions surface in the unit suites instead of on hardware.
 `.github/workflows/ci.yml` runs on every push and pull request:
 
 - **Host unit tests** job: builds and runs the `tests/` suite with ctest.
-- **Firmware** job (matrix): builds the debug, release, and self-test
-  variants with the ARM toolchain, verifies the `dist/<variant>/` flashing
-  artifacts exist, and uploads them as workflow artifacts (7-day retention).
+- **Firmware** job: installs the ARM toolchain once, then builds the debug,
+  release, and self-test variants sequentially — sharing the single toolchain
+  install and FetchContent checkout — verifying each `dist/<variant>/`
+  flashing artifact exists, and uploading them as one workflow artifact
+  (7-day retention).
 
 The release variant matters in particular: it builds with `-flto`, which has
 already caught one LTO-only link failure that the debug build did not expose.
