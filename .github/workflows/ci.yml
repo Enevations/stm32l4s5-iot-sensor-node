@@ -66,9 +66,9 @@ jobs:
 
       - name: Verify flashed artifacts
         run: |
-          test -f "dist/${{ matrix.variant }}/stm32l4s5-base.elf"
-          test -f "dist/${{ matrix.variant }}/stm32l4s5-base.bin"
-          test -f "dist/${{ matrix.variant }}/stm32l4s5-base.hex"
+          test -f "dist/${{ matrix.variant }}/stm32l4s5-iot-sensor-node.elf"
+          test -f "dist/${{ matrix.variant }}/stm32l4s5-iot-sensor-node.bin"
+          test -f "dist/${{ matrix.variant }}/stm32l4s5-iot-sensor-node.hex"
 
       - name: Upload flashing artifacts
         uses: actions/upload-artifact@v6

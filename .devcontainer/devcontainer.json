@@ -15,7 +15,8 @@
             "mcu-debug.debug-tracker-vscode",
             "marus25.cortex-debug",
             "ms-vscode.cpptools",
-            "ms-vscode.cmake-tools"
+            "ms-vscode.cmake-tools",
+            "kilocode.kilo-code"
          ],
          "settings": {
             "C_Cpp.default.compileCommands": "${workspaceFolder}/build/debug/compile_commands.json",
