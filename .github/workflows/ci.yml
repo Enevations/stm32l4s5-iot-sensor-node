@@ -14,6 +14,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Check for unresolved conflict markers
+        run: |
+          if grep -rEn --include='*.cpp' --include='*.hpp' --include='*.h' \
+              --include='*.yml' --include='*.md' \
+              '^(<<<<<<<|>>>>>>>) ' . --exclude-dir=.git --exclude-dir=dist; then
+            echo "::error::Unresolved conflict markers found in the tree"
+            exit 1
+          fi
+
       - name: Configure host tests
         run: cmake -B build/host-tests -S tests -G Ninja
 

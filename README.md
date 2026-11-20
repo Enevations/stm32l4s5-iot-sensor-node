@@ -145,6 +145,24 @@ malloc-failed hook from inside the kernel allocation, printing its own
 This reduces the risk of leaked tasks, queues, or mutex ownership and keeps
 resource cleanup close to the code that acquires the resource.
 
+## Git workflow notes
+
+Practices that prevent the stale-stash/conflict incident this project hit:
+
+- **Commit early.** Park work in commits on a branch, not in stashes — a stash
+  is invisible in `git log`, goes stale silently, and conflicts painfully when
+  re-applied days later. A `WIP:` commit beats a stash every time.
+- **Silent auto-stash is disabled** (`git.autoStash: false` in
+  `.vscode/settings.json`): a pull/sync with a dirty tree stops with an error
+  instead of stashing and re-applying behind your back.
+- **A pre-commit hook rejects unresolved conflict markers**
+  (`githooks/pre-commit`, wired via `core.hooksPath githooks` in the dev
+  container's `postCreateCommand`; for other clones run
+  `git config core.hooksPath githooks` once). CI performs the same check, so
+  marker-laden commits cannot reach `master` either way.
+- **End AI or work sessions with `git status` + a build/test run** — never
+  leave a tree whose state is unknown to the next session.
+
 ## Fault reporting and diagnostics
 
 Failures stop the system loudly instead of freezing silently:

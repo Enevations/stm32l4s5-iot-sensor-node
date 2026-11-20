@@ -8,7 +8,7 @@
     "source=stm32l4s5-deps-cache,target=${containerWorkspaceFolder}/.cache,type=volume",
     "source=stm32l4s5-build-cache,target=${containerWorkspaceFolder}/build,type=volume"
   ],
-  "postCreateCommand": "chown -R root:root ${containerWorkspaceFolder}/.cache ${containerWorkspaceFolder}/build",
+  "postCreateCommand": "chown -R root:root ${containerWorkspaceFolder}/.cache ${containerWorkspaceFolder}/build && git config core.hooksPath githooks",
    "customizations": {
       "vscode": {
          "extensions": [
