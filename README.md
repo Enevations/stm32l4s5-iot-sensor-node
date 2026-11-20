@@ -241,9 +241,9 @@ cmake -B build/selftest -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/selftest
 ```
 
-Expected serial output: `Self-test PASS (split_float, hts221, post_check)`
-after the banner; a failing suite prints its case after `[FATAL] Self-test
-... FAILED:` and halts.
+Expected serial output: `Self-test PASS (split_float, hts221, post_check,
+stall_tracker, queue probe)` after the banner; a failing suite prints its
+case after `[FATAL] Self-test ... FAILED:` and halts.
 
 #### Running the self-test on the target
 
@@ -278,6 +278,8 @@ and watch the serial port:
 | `split_float` | Sign preservation in (-1, 0), rounding vs truncation, fraction carry, invariants across a value sweep |
 | `hts221` | WHO_AM_I check, calibration-image load, degenerate-calibration guard, linear interpolation at midpoints and endpoints, negative temperatures, humidity clamping, invalid sample on bus loss |
 | `post_check` | All-devices-present pass, missing-device detection with reported address, probe stop at first failure, empty list |
+| `stall_tracker` | Consecutive-drop counting, reset on recovery, fresh stall after recovery, 1000-sample stall tracking |
+| queue probe (target only) | A full `rtos::Queue` rejects a zero-tick send and draining makes room again — the bounded-send mechanism the drop policy relies on |
 
 ### Testing the failure paths
 

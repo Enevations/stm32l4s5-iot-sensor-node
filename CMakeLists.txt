@@ -99,6 +99,7 @@ if(STM32_SELF_TEST)
         tests/test_split_float.cpp
         tests/test_hts221.cpp
         tests/test_post_check.cpp
+        tests/test_stall_tracker.cpp
     )
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE STM32_SELF_TEST STM32_TARGET)
 endif()

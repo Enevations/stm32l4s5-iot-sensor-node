@@ -11,6 +11,7 @@ set(TEST_SOURCES
     test_split_float.cpp
     test_hts221.cpp
     test_post_check.cpp
+    test_stall_tracker.cpp
 )
 
 # Host binary. Requires a host C++ toolchain (g++/clang++). The dev container
