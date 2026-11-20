@@ -71,7 +71,9 @@ bool I2cBus::read_reg(uint8_t dev_addr_7bit, uint8_t reg_addr, uint8_t& out_valu
 }
 
 bool I2cBus::read_regs(uint8_t dev_addr_7bit, uint8_t start_reg_addr, uint8_t* buffer, std::size_t length, uint32_t timeout_ms) noexcept {
-    if (buffer == nullptr || length == 0) {
+    // The HAL API takes a 16-bit count; larger requests would be silently
+    // truncated into a partial read, so reject them instead.
+    if (buffer == nullptr || length == 0 || length > UINT16_MAX) {
         return false;
     }
 

@@ -37,7 +37,11 @@ public:
                           uint8_t& out_value,
                           uint32_t timeout_ms = 50) noexcept = 0;
 
-    /** @copydoc I2cBus::read_regs */
+    /** @copydoc I2cBus::read_regs
+     *
+     * Implementations must reject length values above UINT16_MAX (returning
+     * false) rather than truncating into a partial read.
+     */
     virtual bool read_regs(uint8_t dev_addr_7bit,
                            uint8_t start_reg_addr,
                            uint8_t* buffer,

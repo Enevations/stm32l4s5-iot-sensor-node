@@ -159,20 +159,22 @@ private:
 };
 
 /**
- * @brief RAII lock that guards a resource only while the scheduler is running.
+ * @brief RAII lock that guards a resource only when blocking is possible.
  *
- * Before the scheduler starts, only main() executes, so there is no contention
- * to guard against — and acquiring a FreeRTOS mutex in that window relies on
- * kernel-internal pre-scheduler behavior (priority inheritance against
- * pxCurrentTCB). The guard therefore proceeds unlocked when the scheduler has
- * not started and locks with portMAX_DELAY once it runs. Not usable while the
+ * Acquiring a FreeRTOS mutex requires a running scheduler and must never be
+ * attempted from handler mode or with interrupts masked (the fail-stop hooks,
+ * hard-fault reporting): a masked PendSV cannot preempt, so xSemaphoreTake
+ * would spin forever and the diagnostic output would never reach the UART.
+ * The guard therefore proceeds unlocked when the scheduler has not started,
+ * when xPortIsInsideInterrupt() reports handler mode, or when BASEPRI is
+ * raised; it locks with portMAX_DELAY otherwise. Not usable while the
  * scheduler is suspended.
  */
 class SchedulerLock {
 public:
-    /** @brief Locks the mutex unless the scheduler has not started yet. */
+    /** @brief Locks the mutex unless the caller cannot safely block. */
     explicit SchedulerLock(Mutex& mutex) noexcept : mutex_(mutex) {
-        if (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) {
+        if (!may_lock()) {
             return;
         }
         proceed_ = mutex_.lock(portMAX_DELAY);
@@ -193,6 +195,30 @@ public:
     explicit operator bool() const noexcept { return proceed_; }
 
 private:
+    /**
+     * @brief Reports whether acquiring the mutex can complete without hanging.
+     *
+     * Blocking is impossible when the scheduler has not started (no current
+     * task to park), when the caller runs inside an interrupt or fault
+     * handler (xSemaphoreTake is not handler-safe), or when interrupts are
+     * masked via BASEPRI (a masked PendSV cannot preempt, so a blocked take
+     * would spin forever). In all three cases the caller must proceed
+     * unlocked instead.
+     *
+     * @return true when mutex_.lock(portMAX_DELAY) is safe to attempt.
+     */
+    static bool may_lock() noexcept {
+        if (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) {
+            return false;
+        }
+        if (xPortIsInsideInterrupt() != 0) {
+            return false;
+        }
+        uint32_t basepri{0};
+        __asm volatile("mrs %0, basepri" : "=r"(basepri));
+        return basepri == 0U;
+    }
+
     Mutex& mutex_;
     bool proceed_{true};
     bool held_{false};

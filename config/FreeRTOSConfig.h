@@ -34,11 +34,11 @@ extern uint32_t SystemCoreClock;
 #define configCHECK_FOR_STACK_OVERFLOW          2
 #define configUSE_MALLOC_FAILED_HOOK            1
 
-/* Software Timers */
-#define configUSE_TIMERS                        1
-#define configTIMER_TASK_PRIORITY               ( 2 )
-#define configTIMER_QUEUE_LENGTH                5
-#define configTIMER_TASK_STACK_DEPTH            ( configMINIMAL_STACK_SIZE * 2 )
+/* Software timers are not used by this firmware; disabling them avoids
+ * allocating the timer service task (stack, TCB, and queue). The scheduler
+ * state query used by rtos::SchedulerLock relies on INCLUDE_xTaskGetSchedulerState
+ * below, not on the timer subsystem. */
+#define configUSE_TIMERS                        0
 
 /* Extra task metadata supports debugger RTOS awareness in Debug builds only. */
 #ifndef NDEBUG

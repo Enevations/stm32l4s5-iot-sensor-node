@@ -1,0 +1,16 @@
+#!/bin/sh
+# Pre-commit guard: reject commits containing unresolved conflict markers.
+# The '======= ' divider is intentionally not checked (it appears in
+# documentation as a section divider); the paired <<<<<<< and >>>>>>> markers
+# are unambiguous.
+
+status=0
+for f in $(git diff --cached --name-only --diff-filter=ACM); do
+    if grep -qE '^(<<<<<<<|>>>>>>>) ' "$f" 2>/dev/null; then
+        echo "ERROR: unresolved conflict markers in $f" >&2
+        echo "       resolve the conflict, 'git add' the file, and commit again." >&2
+        status=1
+    fi
+done
+
+exit $status

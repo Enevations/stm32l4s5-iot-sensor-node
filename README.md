@@ -22,7 +22,9 @@ At startup, `src/main.cpp`:
    - **Heartbeat** (priority 2): blinks LD2 every second (fast blinks on
      hardware fault) and prints per-task stack high-water marks every ~5 s.
    - **SensorTask** (priority 1): initializes the HTS221 (WHO_AM_I check,
-     factory calibration, 1 Hz ODR with BDU) and samples it once per second.
+     factory calibration, 1 Hz ODR with BDU), retrying with exponential
+     backoff and a logged failure reason until it succeeds, then samples it
+     once per second.
    - **TelemetryTask** (priority 1): prints each sample as
      `[<uptime> ms] Temp: <t>.<tt> C | Humidity: <h>.<hh> %`.
 
@@ -85,6 +87,7 @@ connection. No wiring is required.
 │   └── test_split_float.cpp           # Telemetry formatting suite
 ├── STM32L4S5VITx_FLASH.ld             # 2 MB Flash / 640 KB SRAM memory layout
 ├── docs/
+│   ├── findings.md                     # Review findings log: resolved, open, lessons
 │   └── stm32_b_l4s5i_iot01a_setup_guide.md
 ├── .devcontainer/                     # Reproducible Debian ARM build container
 ├── .vscode/                           # Build tasks and Cortex-Debug launch config
@@ -141,6 +144,24 @@ malloc-failed hook from inside the kernel allocation, printing its own
 
 This reduces the risk of leaked tasks, queues, or mutex ownership and keeps
 resource cleanup close to the code that acquires the resource.
+
+## Git workflow notes
+
+Practices that prevent the stale-stash/conflict incident this project hit:
+
+- **Commit early.** Park work in commits on a branch, not in stashes — a stash
+  is invisible in `git log`, goes stale silently, and conflicts painfully when
+  re-applied days later. A `WIP:` commit beats a stash every time.
+- **Silent auto-stash is disabled** (`git.autoStash: false` in
+  `.vscode/settings.json`): a pull/sync with a dirty tree stops with an error
+  instead of stashing and re-applying behind your back.
+- **A pre-commit hook rejects unresolved conflict markers**
+  (`githooks/pre-commit`, wired via `core.hooksPath githooks` in the dev
+  container's `postCreateCommand`; for other clones run
+  `git config core.hooksPath githooks` once). CI performs the same check, so
+  marker-laden commits cannot reach `master` either way.
+- **End AI or work sessions with `git status` + a build/test run** — never
+  leave a tree whose state is unknown to the next session.
 
 ## Fault reporting and diagnostics
 
@@ -220,9 +241,9 @@ cmake -B build/selftest -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/selftest
 ```
 
-Expected serial output: `Self-test PASS (split_float, hts221, post_check)`
-after the banner; a failing suite prints its case after `[FATAL] Self-test
-... FAILED:` and halts.
+Expected serial output: `Self-test PASS (split_float, hts221, post_check,
+stall_tracker, queue probe)` after the banner; a failing suite prints its
+case after `[FATAL] Self-test ... FAILED:` and halts.
 
 #### Running the self-test on the target
 
@@ -239,11 +260,7 @@ and watch the serial port:
    & "D:/xpack-openocd-0.12.0-7/bin/openocd.exe" `
      -f interface/stlink.cfg `
      -f target/stm32l4x.cfg `
-<<<<<<< ours
      -c "program dist/selftest/stm32l4s5-iot-sensor-node.elf verify reset exit"
-=======
-     -c "program dist/selftest/stm32l4s5-base.elf verify reset exit"
->>>>>>> theirs
    ```
 
 3. Open the serial terminal as described in
@@ -261,6 +278,8 @@ and watch the serial port:
 | `split_float` | Sign preservation in (-1, 0), rounding vs truncation, fraction carry, invariants across a value sweep |
 | `hts221` | WHO_AM_I check, calibration-image load, degenerate-calibration guard, linear interpolation at midpoints and endpoints, negative temperatures, humidity clamping, invalid sample on bus loss |
 | `post_check` | All-devices-present pass, missing-device detection with reported address, probe stop at first failure, empty list |
+| `stall_tracker` | Consecutive-drop counting, reset on recovery, fresh stall after recovery, 1000-sample stall tracking |
+| queue probe (target only) | A full `rtos::Queue` rejects a zero-tick send and draining makes room again — the bounded-send mechanism the drop policy relies on |
 
 ### Testing the failure paths
 
@@ -284,9 +303,11 @@ regressions surface in the unit suites instead of on hardware.
 `.github/workflows/ci.yml` runs on every push and pull request:
 
 - **Host unit tests** job: builds and runs the `tests/` suite with ctest.
-- **Firmware** job (matrix): builds the debug, release, and self-test
-  variants with the ARM toolchain, verifies the `dist/<variant>/` flashing
-  artifacts exist, and uploads them as workflow artifacts (7-day retention).
+- **Firmware** job: installs the ARM toolchain once, then builds the debug,
+  release, and self-test variants sequentially — sharing the single toolchain
+  install and FetchContent checkout — verifying each `dist/<variant>/`
+  flashing artifact exists, and uploading them as one workflow artifact
+  (7-day retention).
 
 The release variant matters in particular: it builds with `-flto`, which has
 already caught one LTO-only link failure that the debug build did not expose.
@@ -378,15 +399,9 @@ it are visible inside the container only — the Windows host cannot read them.
 Every build therefore mirrors its images to `dist/<variant>/` in the workspace
 root (which *is* shared with Windows) via a CMake post-build step:
 
-<<<<<<< ours
 - `dist/debug/stm32l4s5-iot-sensor-node.elf`
 - `dist/release/stm32l4s5-iot-sensor-node.elf`
 - `dist/selftest/stm32l4s5-iot-sensor-node.elf`
-=======
-- `dist/debug/stm32l4s5-base.elf`
-- `dist/release/stm32l4s5-base.elf`
-- `dist/selftest/stm32l4s5-base.elf`
->>>>>>> theirs
 
 Each folder also contains the `.bin` and `.hex` images. Then open a
 **PowerShell terminal on the Windows host** in the repository root and run
@@ -396,11 +411,7 @@ xPack OpenOCD:
 & "D:/xpack-openocd-0.12.0-7/bin/openocd.exe" `
   -f interface/stlink.cfg `
   -f target/stm32l4x.cfg `
-<<<<<<< ours
   -c "program dist/debug/stm32l4s5-iot-sensor-node.elf verify reset exit"
-=======
-  -c "program dist/debug/stm32l4s5-base.elf verify reset exit"
->>>>>>> theirs
 ```
 
 Flash `dist/release/...` or `dist/selftest/...` instead for the release or

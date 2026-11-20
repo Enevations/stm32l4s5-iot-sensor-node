@@ -75,7 +75,8 @@ public:
      * @param dev_addr_7bit 7-bit peripheral address.
      * @param start_reg_addr Address of the first register.
      * @param[out] buffer Destination buffer.
-     * @param length Number of bytes to read.
+     * @param length Number of bytes to read; must not exceed UINT16_MAX
+     *        (larger requests return false rather than reading partially).
      * @param timeout_ms HAL transaction timeout in milliseconds.
      * @return true on successful reception.
      */

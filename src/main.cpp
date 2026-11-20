@@ -11,12 +11,6 @@
 #include <cstring>
 #include <atomic>
 
-#ifdef STM32_SELF_TEST
-// Provided by tests/test_split_float.cpp, compiled into the firmware when
-// CMake is configured with -DSTM32_SELF_TEST=ON.
-extern bool run_split_float_tests(char* error_buffer, std::size_t error_size);
-#endif
-
 #include "stm32l4xx_hal.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -26,6 +20,7 @@ extern bool run_split_float_tests(char* error_buffer, std::size_t error_size);
 #include "led.hpp"
 #include "humidity_temp_snsr.hpp"
 #include "split_float.hpp"
+#include "stall_tracker.hpp"
 
 #ifdef STM32_SELF_TEST
 // Provided by tests/*.cpp, compiled into the firmware when CMake is
@@ -33,6 +28,7 @@ extern bool run_split_float_tests(char* error_buffer, std::size_t error_size);
 extern bool run_split_float_tests(char* error_buffer, std::size_t error_size);
 extern bool run_hts221_tests(char* error_buffer, std::size_t error_size);
 extern bool run_post_check_tests(char* error_buffer, std::size_t error_size);
+extern bool run_stall_tracker_tests(char* error_buffer, std::size_t error_size);
 #endif
 
 // --- FreeRTOS Kernel Hooks ---
@@ -312,26 +308,71 @@ static void heartbeat(void* raw_ctx) {
 }
 
 /**
+ * @brief Maps a driver init failure to a human-readable reason.
+ */
+static const char* init_status_text(drivers::InitStatus status) noexcept {
+    switch (status) {
+        case drivers::InitStatus::Ok:                return "ok";
+        case drivers::InitStatus::BusError:          return "bus error";
+        case drivers::InitStatus::WhoAmIMismatch:    return "WHO_AM_I mismatch";
+        case drivers::InitStatus::InvalidCalibration: return "invalid calibration";
+    }
+    return "unknown";
+}
+
+/**
  * @brief Samples the HTS221 humidity/temperature sensor once per second.
  *
- * Loads the sensor's factory calibration during init; if that fails, the task
- * reports a hardware fault and parks forever (the heartbeat keeps running so
- * the fault pattern stays visible). Valid samples are queued for the
- * telemetry task; failed reads are logged and retried on the next cycle.
+ * Loads the sensor's factory calibration during init. A failed init is
+ * flagged as a hardware fault (fast heartbeat blinks) and retried with
+ * exponential backoff (2 s -> 4 s -> 8 s cap) so transient faults recover;
+ * once init succeeds, the fault state is cleared again. Valid samples are
+ * queued for the telemetry task with a bounded wait: if the queue stays full
+ * (telemetry stalled), the sample is dropped and logged so sampling never
+ * freezes. Failed reads are logged and retried on the next cycle.
  *
  * @param raw_ctx Pointer to the AppContext owning the I2C bus and queue.
  */
 static void sensor_task(void* raw_ctx) {
     auto* ctx = static_cast<AppContext*>(raw_ctx);
     drivers::HumidityTempSnsr sensor(ctx->i2c_bus);
+    char msg[112];
+    char log_line[96];
 
-    while (!sensor.init()) {
-        uart1.write("Sensor init failed\n");
+    uint32_t attempts = 0;
+    bool fault_flagged = false;
+    drivers::InitStatus status = drivers::InitStatus::Ok;
+    while ((status = sensor.init()) != drivers::InitStatus::Ok) {
+        ++attempts;
+        // Exponential backoff: 2 s, 4 s, then capped at 8 s per retry.
+        const uint32_t backoff_ms = 1000U << ((attempts < 3U) ? attempts : 3U);
+        fault_flagged = true;
         gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
-        for(;;) {
-            rtos::sleep_ms(1000);
+
+        const int len = std::snprintf(msg, sizeof(msg),
+            "Sensor init failed (attempt %lu: %s); retrying in %lu s\r\n",
+            static_cast<unsigned long>(attempts),
+            init_status_text(status),
+            static_cast<unsigned long>(backoff_ms / 1000U));
+        if (len > 0) {
+            uart1.write(msg, static_cast<std::size_t>(len));
+        }
+        rtos::sleep_ms(backoff_ms);
+    }
+
+    if (fault_flagged) {
+        // Clear the fault only when this task raised it, so POST or clock
+        // failures reported elsewhere are not masked by sensor recovery.
+        gboard_state.store(BoardState::Healthy, std::memory_order_release);
+        const int len = std::snprintf(msg, sizeof(msg),
+            "Sensor init succeeded (attempt %lu)\r\n",
+            static_cast<unsigned long>(attempts + 1U));
+        if (len > 0) {
+            uart1.write(msg, static_cast<std::size_t>(len));
         }
     }
+
+    telemetry::StallTracker stall;
 
     for(;;) {
         const auto sample = sensor.read();
@@ -341,7 +382,29 @@ static void sensor_task(void* raw_ctx) {
                 .temperature_c = sample.temperature_c,
                 .humidity_pct = sample.humidity_pct
             };
-            ctx->telemetry_queue.send(msg);
+            // A stalled telemetry task must not freeze sampling: wait at most
+            // 2 s for queue space, then drop the sample and keep measuring.
+            if (ctx->telemetry_queue.send(msg, pdMS_TO_TICKS(2000))) {
+                const uint32_t dropped = stall.consecutive_drops();
+                stall.note_enqueued();
+                if (dropped > 0) {
+                    const int len = std::snprintf(log_line, sizeof(log_line),
+                        "Telemetry queue recovered (dropped %lu samples)\r\n",
+                        static_cast<unsigned long>(dropped));
+                    if (len > 0) {
+                        uart1.write(log_line, static_cast<std::size_t>(len));
+                    }
+                }
+            }
+            else {
+                const uint32_t total = stall.note_dropped();
+                const int len = std::snprintf(log_line, sizeof(log_line),
+                    "Telemetry queue full; sample dropped (total %lu)\r\n",
+                    static_cast<unsigned long>(total));
+                if (len > 0) {
+                    uart1.write(log_line, static_cast<std::size_t>(len));
+                }
+            }
         }
         else {
             uart1.write("Sensor read failed! Try again.\n");
@@ -451,10 +514,33 @@ int main() {
             uart1.write(self_test_error, std::strlen(self_test_error));
             uart1.write("\r\n");
         }
+        if (!run_stall_tracker_tests(self_test_error, sizeof(self_test_error))) {
+            self_test_ok = false;
+            uart1.write("[FATAL] Self-test stall_tracker FAILED: ");
+            uart1.write(self_test_error, std::strlen(self_test_error));
+            uart1.write("\r\n");
+        }
+
+        // Real-queue probe: a full queue must reject a zero-tick send and
+        // draining it must make room again — the bounded-send mechanism the
+        // drop policy in sensor_task relies on.
+        {
+            rtos::Queue<uint32_t> probe_queue(1);
+            const uint32_t value = 42;
+            uint32_t drained = 0;
+            const bool full_rejected = !probe_queue.send(value, 0);
+            const bool receive_ok = probe_queue.receive(drained, 0) && drained == value;
+            const bool refill_ok = probe_queue.send(value, 0);
+            if (!full_rejected || !receive_ok || !refill_ok) {
+                self_test_ok = false;
+                uart1.write("[FATAL] Self-test queue probe FAILED\r\n");
+                while (true) {}
+            }
+        }
         if (!self_test_ok) {
             while (true) {}
         }
-        uart1.write("Self-test PASS (split_float, hts221, post_check)\r\n");
+        uart1.write("Self-test PASS (split_float, hts221, post_check, stall_tracker, queue probe)\r\n");
     }
 #endif
 
