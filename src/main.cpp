@@ -312,24 +312,65 @@ static void heartbeat(void* raw_ctx) {
 }
 
 /**
+ * @brief Maps a driver init failure to a human-readable reason.
+ */
+static const char* init_status_text(drivers::InitStatus status) noexcept {
+    switch (status) {
+        case drivers::InitStatus::Ok:                return "ok";
+        case drivers::InitStatus::BusError:          return "bus error";
+        case drivers::InitStatus::WhoAmIMismatch:    return "WHO_AM_I mismatch";
+        case drivers::InitStatus::InvalidCalibration: return "invalid calibration";
+    }
+    return "unknown";
+}
+
+/**
  * @brief Samples the HTS221 humidity/temperature sensor once per second.
  *
- * Loads the sensor's factory calibration during init; if that fails, the task
- * reports a hardware fault and parks forever (the heartbeat keeps running so
- * the fault pattern stays visible). Valid samples are queued for the
- * telemetry task; failed reads are logged and retried on the next cycle.
+ * Loads the sensor's factory calibration during init. A failed init is
+ * flagged as a hardware fault (fast heartbeat blinks) and retried with
+ * exponential backoff (2 s -> 4 s -> 8 s cap) so transient faults recover;
+ * once init succeeds, the fault state is cleared again. Valid samples are
+ * queued for the telemetry task; failed reads are logged and retried on the
+ * next cycle.
  *
  * @param raw_ctx Pointer to the AppContext owning the I2C bus and queue.
  */
 static void sensor_task(void* raw_ctx) {
     auto* ctx = static_cast<AppContext*>(raw_ctx);
     drivers::HumidityTempSnsr sensor(ctx->i2c_bus);
+    char msg[112];
 
-    while (!sensor.init()) {
-        uart1.write("Sensor init failed\n");
+    uint32_t attempts = 0;
+    bool fault_flagged = false;
+    drivers::InitStatus status = drivers::InitStatus::Ok;
+    while ((status = sensor.init()) != drivers::InitStatus::Ok) {
+        ++attempts;
+        // Exponential backoff: 2 s, 4 s, then capped at 8 s per retry.
+        const uint32_t backoff_ms = 1000U << ((attempts < 3U) ? attempts : 3U);
+        fault_flagged = true;
         gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
-        for(;;) {
-            rtos::sleep_ms(1000);
+
+        const int len = std::snprintf(msg, sizeof(msg),
+            "Sensor init failed (attempt %lu: %s); retrying in %lu s\r\n",
+            static_cast<unsigned long>(attempts),
+            init_status_text(status),
+            static_cast<unsigned long>(backoff_ms / 1000U));
+        if (len > 0) {
+            uart1.write(msg, static_cast<std::size_t>(len));
+        }
+        rtos::sleep_ms(backoff_ms);
+    }
+
+    if (fault_flagged) {
+        // Clear the fault only when this task raised it, so POST or clock
+        // failures reported elsewhere are not masked by sensor recovery.
+        gboard_state.store(BoardState::Healthy, std::memory_order_release);
+        const int len = std::snprintf(msg, sizeof(msg),
+            "Sensor init succeeded (attempt %lu)\r\n",
+            static_cast<unsigned long>(attempts + 1U));
+        if (len > 0) {
+            uart1.write(msg, static_cast<std::size_t>(len));
         }
     }
 

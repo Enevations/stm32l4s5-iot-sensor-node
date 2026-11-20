@@ -21,19 +21,24 @@ constexpr int16_t combine_i16(uint8_t lsb, uint8_t msb) noexcept {
 }
 } // namespace
 
-bool HumidityTempSnsr::init() noexcept {
+InitStatus HumidityTempSnsr::init() noexcept {
     uint8_t who_am_i = 0;
-    if (!bus_.read_reg(kI2cAddress, kRegWhoAmI, who_am_i) || who_am_i != kExpectedWhoAmI) {
-        return false;
+    if (!bus_.read_reg(kI2cAddress, kRegWhoAmI, who_am_i)) {
+        return InitStatus::BusError;
+    }
+    if (who_am_i != kExpectedWhoAmI) {
+        return InitStatus::WhoAmIMismatch;
     }
 
     if (!load_calibration()) {
-        return false;
+        return InitStatus::InvalidCalibration;
     }
 
     // CTRL_REG1: PD=1 (Active), BDU=1 (Block Data Update), ODR=1Hz -> 0x85[cite: 1]
     constexpr uint8_t kCtrl1Config = (1U << 7) | (1U << 2) | 0x01U;
-    return bus_.write_reg(kI2cAddress, kRegCtrl1, kCtrl1Config);
+    return bus_.write_reg(kI2cAddress, kRegCtrl1, kCtrl1Config)
+               ? InitStatus::Ok
+               : InitStatus::BusError;
 }
 
 bool HumidityTempSnsr::load_calibration() noexcept {

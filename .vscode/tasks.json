@@ -57,7 +57,7 @@
     {
       "label": "Purge All Builds and FetchContent Cache",
       "type": "shell",
-      "command": "rm -rf build/debug build/release .cache/deps",
+      "command": "rm -rf build/debug build/release build/selftest build/host-tests .cache/deps",
       "problemMatcher": []
     }
   ]

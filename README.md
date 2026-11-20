@@ -22,7 +22,9 @@ At startup, `src/main.cpp`:
    - **Heartbeat** (priority 2): blinks LD2 every second (fast blinks on
      hardware fault) and prints per-task stack high-water marks every ~5 s.
    - **SensorTask** (priority 1): initializes the HTS221 (WHO_AM_I check,
-     factory calibration, 1 Hz ODR with BDU) and samples it once per second.
+     factory calibration, 1 Hz ODR with BDU), retrying with exponential
+     backoff and a logged failure reason until it succeeds, then samples it
+     once per second.
    - **TelemetryTask** (priority 1): prints each sample as
      `[<uptime> ms] Temp: <t>.<tt> C | Humidity: <h>.<hh> %`.
 
