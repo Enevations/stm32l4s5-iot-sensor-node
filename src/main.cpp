@@ -23,23 +23,9 @@
 #include "hts221_sensor.hpp"
 #include "lps22hb_sensor.hpp"
 #include "lsm6dsl_tap.hpp"
+#include "self_test.hpp"
 #include "split_float.hpp"
 #include "stall_tracker.hpp"
-
-#ifdef STM32_SELF_TEST
-#include "test_report.hpp"
-#endif
-
-#ifdef STM32_SELF_TEST
-// Provided by tests/*.cpp, compil ed into the firmware when CMake is
-// configured with -DSTM32_SELF_TEST=ON.
-extern bool run_split_float_tests(char* error_buffer, std::size_t error_size);
-extern bool run_hts221_tests(char* error_buffer, std::size_t error_size);
-extern bool run_lps22hb_tests(char* error_buffer, std::size_t error_size);
-extern bool run_post_check_tests(char* error_buffer, std::size_t error_size);
-extern bool run_stall_tracker_tests(char* error_buffer, std::size_t error_size);
-extern bool run_lsm6dsl_tap_tests(char* error_buffer, std::size_t error_size);
-#endif
 
 // --- FreeRTOS Kernel Hooks ---
 extern "C" {
@@ -684,21 +670,6 @@ static void fail_before_hal_init() {
     }
 }
 
-#ifdef STM32_SELF_TEST
-
-/// @brief Per-case self-test reporter: prints each case over UART1 as it runs,
-/// so a target failure names the exact case instead of only the first one.
-static void uart_report_case(const char* suite, const char* what, bool passed) {
-    char line[128];
-    const int len = std::snprintf(line, sizeof(line), "[Self-test] %s %s: %s\r\n",
-                                  passed ? "PASS" : "FAIL", suite, what);
-    if (len > 0) {
-        uart1.write(line, static_cast<std::size_t>(len));
-    }
-}
-
-#endif // STM32_SELF_TEST
-
 /**
  * @brief Initializes the MCU and starts the FreeRTOS scheduler.
  * @return This function normally never returns.
@@ -720,74 +691,7 @@ int main() {
     }
 
 #ifdef STM32_SELF_TEST
-    {
-        char self_test_error[128];
-        bool self_test_ok = true;
-        test::set_reporter(uart_report_case);
-        if (!run_split_float_tests(self_test_error, sizeof(self_test_error))) {
-            self_test_ok = false;
-            uart1.write("[FATAL] Self-test split_float FAILED: ");
-            uart1.write(self_test_error, std::strlen(self_test_error));
-            uart1.write("\r\n");
-        }
-        if (!run_hts221_tests(self_test_error, sizeof(self_test_error))) {
-            self_test_ok = false;
-            uart1.write("[FATAL] Self-test hts221 FAILED: ");
-            uart1.write(self_test_error, std::strlen(self_test_error));
-            uart1.write("\r\n");
-        }
-        if (!run_lps22hb_tests(self_test_error, sizeof(self_test_error))) {
-            self_test_ok = false;
-            uart1.write("[FATAL] Self-test lps22hb FAILED: ");
-            uart1.write(self_test_error, std::strlen(self_test_error));
-            uart1.write("\r\n");
-        }
-        if (!run_post_check_tests(self_test_error, sizeof(self_test_error))) {
-            self_test_ok = false;
-            uart1.write("[FATAL] Self-test post_check FAILED: ");
-            uart1.write(self_test_error, std::strlen(self_test_error));
-            uart1.write("\r\n");
-        }
-        if (!run_stall_tracker_tests(self_test_error, sizeof(self_test_error))) {
-            self_test_ok = false;
-            uart1.write("[FATAL] Self-test stall_tracker FAILED: ");
-            uart1.write(self_test_error, std::strlen(self_test_error));
-            uart1.write("\r\n");
-        }
-        if (!run_lsm6dsl_tap_tests(self_test_error, sizeof(self_test_error))) {
-            self_test_ok = false;
-            uart1.write("[FATAL] Self-test lsm6dsl_tap FAILED: ");
-            uart1.write(self_test_error, std::strlen(self_test_error));
-            uart1.write("\r\n");
-        }
-
-        // Real-queue probe: a full queue must reject a zero-tick send and
-        // draining it must make room again — the bounded-send mechanism the
-        // drop policy in sensor_task relies on. The single slot is filled
-        // first; the rejection check must run against a full queue.
-        {
-            rtos::Queue<uint32_t> probe_queue(1);
-            const uint32_t value = 42;
-            uint32_t drained = 0;
-            const bool fill_ok = probe_queue.send(value, 0);
-            const bool full_rejected = !probe_queue.send(value, 0);
-            const bool receive_ok = probe_queue.receive(drained, 0) && drained == value;
-            const bool refill_ok = probe_queue.send(value, 0);
-            test::report_case("queue_probe", "zero-tick send fills the empty slot", fill_ok);
-            test::report_case("queue_probe", "full queue rejects zero-tick send", full_rejected);
-            test::report_case("queue_probe", "drain returns the sent value", receive_ok);
-            test::report_case("queue_probe", "drained slot accepts again", refill_ok);
-            if (!fill_ok || !full_rejected || !receive_ok || !refill_ok) {
-                self_test_ok = false;
-                uart1.write("[FATAL] Self-test queue probe FAILED\r\n");
-                while (true) {}
-            }
-        }
-        if (!self_test_ok) {
-            while (true) {}
-        }
-        uart1.write("Self-test PASS (split_float, hts221, lps22hb, post_check, stall_tracker, lsm6dsl_tap, queue probe)\r\n");
-    }
+    app::run_self_tests(uart1);
 #endif
 
     // Static storage duration is mandatory: the FreeRTOS Cortex-M4F port

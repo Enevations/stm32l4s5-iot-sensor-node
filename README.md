@@ -81,6 +81,7 @@ connection. No wiring is required.
 │   ├── lsm6dsl_tap.hpp                # LSM6DSL double-tap driver (gesture event source)
 │   ├── post_check.hpp                 # Pure I2C power-on self-test probe
 │   ├── rtos.hpp                       # FreeRTOS C++ RAII wrappers
+│   ├── self_test.hpp                  # On-target self-test harness (STM32_SELF_TEST)
 │   ├── sensor_interface.hpp           # HAL-free ISensor abstraction + shared sample/InitStatus
 │   ├── split_float.hpp                # Constexpr telemetry float formatting (host-testable)
 │   ├── stall_tracker.hpp              # Telemetry queue drop/recovery policy (host-testable)
@@ -90,7 +91,8 @@ connection. No wiring is required.
 │   ├── i2c_bus.cpp                    # I2C2 HAL setup and serialized transactions
 │   ├── lps22hb_sensor.cpp             # LPS22HB pressure/temperature conversion
 │   ├── lsm6dsl_tap.cpp                # LSM6DSL double-tap configuration and event read
-│   └── main.cpp                       # Clock, GPIO, tasks, and telemetry application
+│   ├── main.cpp                       # Clock, GPIO, tasks, and telemetry application
+│   └── self_test.cpp                  # Boot-time self-test runner (STM32_SELF_TEST)
 ├── tests/
 │   ├── CMakeLists.txt                 # Host + cross-compiled test targets
 │   ├── fake_i2c_bus.hpp               # Emulated I2C bus with canned registers and NACKs
@@ -104,6 +106,7 @@ connection. No wiring is required.
 ├── STM32L4S5VITx_FLASH.ld             # 2 MB Flash / 640 KB SRAM memory layout
 ├── docs/
 │   ├── findings.md                     # Review findings log: resolved, open, lessons
+│   ├── refactoring_plan.md             # main.cpp decomposition plan: tiers, contracts, status
 │   └── stm32_b_l4s5i_iot01a_setup_guide.md
 ├── .devcontainer/                     # Reproducible Debian ARM build container
 ├── .vscode/                           # Build tasks and Cortex-Debug launch config
