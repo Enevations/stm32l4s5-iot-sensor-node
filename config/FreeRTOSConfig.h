@@ -2,8 +2,16 @@
 
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // CMSIS updates this value during clock setup; use it for the Cortex-M port.
 extern uint32_t SystemCoreClock;
+
+#ifdef __cplusplus
+}
+#endif
 
 #define configUSE_PREEMPTION                    1
 #define configUSE_PORT_OPTIMISED_TASK_SELECTION 1

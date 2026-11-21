@@ -5,7 +5,7 @@
 #include <cstring>
 
 #include "stm32l4xx_hal.h"
-#include "rtos.hpp"
+#include "rtos/rtos.hpp"
 
 /**
  * @brief Thin C++ wrapper for an STM32 HAL UART peripheral.

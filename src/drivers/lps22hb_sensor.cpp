@@ -1,4 +1,4 @@
-#include "lps22hb_sensor.hpp"
+#include "drivers/lps22hb_sensor.hpp"
 
 namespace drivers {
 

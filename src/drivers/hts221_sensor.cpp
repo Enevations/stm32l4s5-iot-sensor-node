@@ -1,4 +1,4 @@
-#include "hts221_sensor.hpp"
+#include "drivers/hts221_sensor.hpp"
 
 namespace drivers {
 
