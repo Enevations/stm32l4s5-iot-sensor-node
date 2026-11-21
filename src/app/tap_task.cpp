@@ -1,18 +1,26 @@
 /** @file tap_task.cpp
  *  @brief Task reporting double taps detected by the LSM6DSL hardware.
+ *
+ * The task sleeps blocked on a direct-to-task notification until the
+ * LSM6DSL INT1 output pulses PD11 (EXTI11) — which happens exactly when the
+ * chip's double-tap recognizer fires — so it consumes no CPU between
+ * gestures. After waking it reads and decodes TAP_SRC over I2C in task
+ * context (the bus wrapper is blocking, so the ISR itself only notifies).
  */
 
 #include <cstdio>
 
 #include "FreeRTOS.h"
+#include "task.h"
 #include "stm32l4xx_hal.h"
 
 #include "app/app_context.hpp"
 #include "bsp/board_state.hpp"
+#include "bsp/tap_interrupt.hpp"
 #include "drivers/lsm6dsl_tap.hpp"
-#include "rtos/rtos.hpp"
 #include "drivers/sensor_interface.hpp"
 #include "app/tasks.hpp"
+#include "rtos/rtos.hpp"
 
 namespace app {
 
@@ -23,14 +31,6 @@ void tap_task(void* raw_ctx) {
     uint32_t attempts = 0;
     uint32_t next_try_ms = 0;
     bool fault_flagged = false;
-    // Rate limit for the single-tap tuning aid; low enough that consecutive
-    // knocks of a double attempt show their real spacing in the log.
-    uint32_t last_single_log_ms = 0;
-    constexpr uint32_t kSingleLogMinGapMs = 200U;
-    // Unlatched double-tap flags stay visible ~29 ms, so consecutive polls
-    // can report the same gesture twice; suppress repeats inside 100 ms.
-    uint32_t last_double_log_ms = 0;
-    constexpr uint32_t kDoubleLogMinGapMs = 100U;
 
     char msg[112];
 
@@ -47,6 +47,11 @@ void tap_task(void* raw_ctx) {
             const auto status = ctx->lsm6dsl_tap.init();
             if (status == drivers::InitStatus::Ok) {
                 ready = true;
+                // Enable the PD11/EXTI11 interrupt after the chip is
+                // configured (MD1_CFG routes the double-tap event to INT1).
+                // Idempotent: re-registration after a bus-loss reinit only
+                // restores the same task handle.
+                bsp::tap_interrupt_init(xTaskGetCurrentTaskHandle());
                 const int len = std::snprintf(msg, sizeof(msg),
                     "LSM6DSL 0x%02X tap detection ready (attempt %lu)\r\n",
                     ctx->lsm6dsl_tap.i2c_address(),
@@ -83,33 +88,19 @@ void tap_task(void* raw_ctx) {
             continue;
         }
 
-        // The double-tap flag is visible ~29 ms after recognition, inside
-        // the 20 ms poll interval, so gestures are not missed.
+        // Sleep at 0% CPU until the INT1 pulse: the chip asserts INT1 for
+        // the Quiet window (~29 ms) on each recognized double tap, and the
+        // unlatched TAP_SRC flag stays readable for that whole window, so
+        // the wake-read latency cannot miss the event.
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
         const auto event = ctx->lsm6dsl_tap.read_event();
         if (event == drivers::TapEvent::DoubleTap) {
-            const uint32_t now_ms = HAL_GetTick();
-            if (now_ms - last_double_log_ms >= kDoubleLogMinGapMs) {
-                last_double_log_ms = now_ms;
-                const int len = std::snprintf(msg, sizeof(msg),
-                    "[%lu ms] Double tap detected\r\n",
-                    static_cast<unsigned long>(now_ms));
-                if (len > 0) {
-                    ctx->uart.write(msg, static_cast<std::size_t>(len));
-                }
-            }
-        }
-        else if (event == drivers::TapEvent::SingleTap) {
-            // Tuning aid: the chip sees taps but did not pair them into a
-            // double (second tap too weak or too far apart). Rate-limited.
-            const uint32_t now_ms = HAL_GetTick();
-            if (now_ms - last_single_log_ms >= kSingleLogMinGapMs) {
-                last_single_log_ms = now_ms;
-                const int len = std::snprintf(msg, sizeof(msg),
-                    "[%lu ms] Single tap detected (no second tap within 0.5 s)\r\n",
-                    static_cast<unsigned long>(now_ms));
-                if (len > 0) {
-                    ctx->uart.write(msg, static_cast<std::size_t>(len));
-                }
+            const int len = std::snprintf(msg, sizeof(msg),
+                "[%lu ms] Double tap detected\r\n",
+                static_cast<unsigned long>(HAL_GetTick()));
+            if (len > 0) {
+                ctx->uart.write(msg, static_cast<std::size_t>(len));
             }
         }
         else if (event == drivers::TapEvent::BusError) {
@@ -120,8 +111,8 @@ void tap_task(void* raw_ctx) {
             next_try_ms = HAL_GetTick() + backoff_ms;
             ctx->uart.write("LSM6DSL tap source read failed; reinitializing\r\n");
         }
-
-        rtos::sleep_ms(20);
+        // TapEvent::None: a stale notification from before a reinit window;
+        // the unlatched flag already self-cleared, so there is nothing to do.
     }
 }
 
