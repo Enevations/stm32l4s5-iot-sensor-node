@@ -13,6 +13,7 @@ set(TEST_SOURCES
     test_lps22hb.cpp
     test_post_check.cpp
     test_stall_tracker.cpp
+    test_lsm6dsl_tap.cpp
 )
 
 # Host binary. Requires a host C++ toolchain (g++/clang++). The dev container
@@ -24,6 +25,7 @@ add_executable(unit_tests
     ${TEST_SOURCES}
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/hts221_sensor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/lps22hb_sensor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/lsm6dsl_tap.cpp
 )
 target_include_directories(unit_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include

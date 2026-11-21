@@ -9,13 +9,17 @@
 #include <cstdint>
 
 #include "stall_tracker.hpp"
+#include "test_report.hpp"
 
 namespace {
+
+constexpr const char* kSuite = "stall_tracker";
 
 std::size_t passed = 0;
 std::size_t failures = 0;
 
 void expect_true(bool condition, const char* what, char* error_buffer, std::size_t error_size) {
+    test::report_case(kSuite, what, condition);
     if (condition) {
         ++passed;
     }

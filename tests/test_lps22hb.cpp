@@ -10,8 +10,11 @@
 
 #include "fake_i2c_bus.hpp"
 #include "lps22hb_sensor.hpp"
+#include "test_report.hpp"
 
 namespace {
+
+constexpr const char* kSuite = "lps22hb";
 
 std::size_t passed = 0;
 std::size_t failures = 0;
@@ -23,6 +26,7 @@ void record_failure(const char* what, char* error_buffer, std::size_t error_size
 }
 
 void expect_true(bool condition, const char* what, char* error_buffer, std::size_t error_size) {
+    test::report_case(kSuite, what, condition);
     if (condition) {
         ++passed;
     }
@@ -37,11 +41,13 @@ void expect_near(float actual,
                  char* error_buffer,
                  std::size_t error_size) {
     const float delta = actual - expected;
-    if (delta < -0.05f || delta > 0.05f) {
-        record_failure(what, error_buffer, error_size);
+    const bool ok = delta >= -0.05f && delta <= 0.05f;
+    test::report_case(kSuite, what, ok);
+    if (ok) {
+        ++passed;
     }
     else {
-        ++passed;
+        record_failure(what, error_buffer, error_size);
     }
 }
 

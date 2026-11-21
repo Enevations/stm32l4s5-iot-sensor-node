@@ -14,8 +14,11 @@
 #include <cstring>
 
 #include "split_float.hpp"
+#include "test_report.hpp"
 
 namespace {
+
+constexpr const char* kSuite = "split_float";
 
 std::size_t passed = 0;
 std::size_t failures = 0;
@@ -31,7 +34,9 @@ void expect(const char* input_text,
     std::snprintf(actual, sizeof(actual), "%s%d.%02d",
                   split.negative ? "-" : "", split.whole, split.frac);
 
-    if (std::strcmp(actual, expected) == 0) {
+    const bool ok = std::strcmp(actual, expected) == 0;
+    test::report_case(kSuite, input_text, ok);
+    if (ok) {
         ++passed;
         return;
     }
@@ -73,9 +78,14 @@ bool run_split_float_tests(char* error_buffer, std::size_t error_size) {
     expect("100", 100.0f, "100.00", error_buffer, error_size);
 
     // Invariant sweep: fraction always within [0, 99], magnitude non-negative.
+    // Reported as one aggregate case: thousands of lines on the UART would
+    // bury the interesting output.
     for (int i = -4000; i <= 10000; i += 7) {
         const SplitFloat split = split_float(static_cast<float>(i) / 100.0f);
         if (split.frac < 0 || split.frac > 99 || split.whole < 0) {
+            char what[48];
+            std::snprintf(what, sizeof(what), "invariant broken at input %d", i);
+            test::report_case(kSuite, what, false);
             if (++failures == 1U && error_buffer != nullptr && error_size > 0U) {
                 std::snprintf(error_buffer, error_size, "invariant broken at input %d", i);
             }
@@ -83,6 +93,7 @@ bool run_split_float_tests(char* error_buffer, std::size_t error_size) {
         }
         ++passed;
     }
+    test::report_case(kSuite, "invariant sweep over -40.00..100.00", true);
 
     return failures == 0U;
 }

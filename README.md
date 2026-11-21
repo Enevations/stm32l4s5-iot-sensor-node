@@ -4,7 +4,8 @@
 
 This repository is a C++17 and FreeRTOS firmware for the STMicroelectronics
 **B-L4S5I-IOT01A** discovery board. It reads the onboard HTS221
-humidity/temperature and LPS22HB barometric sensors over I2C2 and prints
+humidity/temperature and LPS22HB barometric sensors over I2C2, polls the
+onboard LSM6DSL accelerometer's hardware double-tap detector, and prints
 sensor telemetry over the ST-LINK virtual COM port, while a heartbeat task
 drives LED LD2 and reports per-task stack margins.
 
@@ -18,18 +19,21 @@ At startup, `src/main.cpp`:
 4. Configures PB6 (USART1 TX) and PB7 (USART1 RX) for 115200 baud.
 5. Initializes I2C2 (PB10/PB11) and verifies that the expected onboard
    sensors respond (a power-on self-test).
-6. Creates three FreeRTOS tasks and starts the scheduler:
+6. Creates four FreeRTOS tasks and starts the scheduler:
    - **Heartbeat** (priority 2): blinks LD2 every second (fast blinks on
      hardware fault) and prints per-task stack high-water marks every ~5 s.
    - **SensorTask** (priority 1): initializes each registered sensor
      independently (identity check, calibration/configuration), retrying with
      exponential backoff and a logged failure reason until it succeeds, then
-     samples every ready sensor once per second into a merged reading
+     samples every ready sensor once every five seconds into a merged reading
      (HTS221: humidity + temperature; LPS22HB: pressure + temperature).
    - **TelemetryTask** (priority 1): prints one line per valid channel of the
      merged reading — `[<uptime> ms] Temp: <t>.<tt> C`,
      `[<uptime> ms] Humidity: <h>.<hh> %`,
      `[<uptime> ms] Pressure: <p>.<pp> hPa`.
+   - **TapTask** (priority 1): polls the LSM6DSL tap-source register
+     every 20 ms and prints `[<uptime> ms] Double tap detected` whenever the
+     chip's hardware double-tap recognizer reports an event.
 
 The FreeRTOS SysTick runs at 1 kHz. The tick hook calls `HAL_IncTick()`. The
 firmware also has fail-stop hooks for allocation failure, stack overflow, and
@@ -44,8 +48,8 @@ hard faults; see [Fault reporting](#fault-reporting-and-diagnostics).
 - Onboard sensors: I2C2 bus on PB10 (SCL) / PB11 (SDA), with 2.2 kΩ external
   pull-ups (per board user manual UM2708). Expected addresses:
   - LIS3MDL magnetometer: 0x1E
-  - HTS221 humidity/temperature: 0x5F (the sensor this firmware reads)
-  - LSM6DSL accelerometer/gyro: 0x6A
+  - HTS221 humidity/temperature: 0x5F (environmental telemetry source)
+  - LSM6DSL accelerometer/gyro: 0x6A (double-tap detection source)
   - LPS22HB barometric pressure: 0x5D
 - USART1 TX: PB6
 - USART1 RX: PB7
@@ -74,6 +78,7 @@ connection. No wiring is required.
 │   ├── i2c_interface.hpp              # HAL-free II2cBus abstraction
 │   ├── led.hpp                        # GPIO LED wrapper
 │   ├── lps22hb_sensor.hpp             # LPS22HB barometric sensor (implements ISensor)
+│   ├── lsm6dsl_tap.hpp                # LSM6DSL double-tap driver (gesture event source)
 │   ├── post_check.hpp                 # Pure I2C power-on self-test probe
 │   ├── rtos.hpp                       # FreeRTOS C++ RAII wrappers
 │   ├── sensor_interface.hpp           # HAL-free ISensor abstraction + shared sample/InitStatus
@@ -84,6 +89,7 @@ connection. No wiring is required.
 │   ├── hts221_sensor.cpp              # HTS221 calibration and sample conversion
 │   ├── i2c_bus.cpp                    # I2C2 HAL setup and serialized transactions
 │   ├── lps22hb_sensor.cpp             # LPS22HB pressure/temperature conversion
+│   ├── lsm6dsl_tap.cpp                # LSM6DSL double-tap configuration and event read
 │   └── main.cpp                       # Clock, GPIO, tasks, and telemetry application
 ├── tests/
 │   ├── CMakeLists.txt                 # Host + cross-compiled test targets
@@ -91,7 +97,9 @@ connection. No wiring is required.
 │   ├── host_main.cpp                  # Entry point for host-built test binary
 │   ├── test_hts221.cpp                # HTS221 driver suite
 │   ├── test_lps22hb.cpp               # LPS22HB driver suite
+│   ├── test_lsm6dsl_tap.cpp           # LSM6DSL tap driver suite
 │   ├── test_post_check.cpp            # POST probe suite
+│   ├── test_report.hpp                # Per-case PASS/FAIL reporter shared by suites
 │   └── test_split_float.cpp           # Telemetry formatting suite
 ├── STM32L4S5VITx_FLASH.ld             # 2 MB Flash / 640 KB SRAM memory layout
 ├── docs/
@@ -137,6 +145,30 @@ during `init()`, precomputes the interpolation slopes, and converts raw ADC
 output in `read()`. Register block reads set the auto-increment bit, and
 block data update (BDU) is enabled so humidity and temperature are always
 read as a consistent pair.
+
+### Tap detection
+
+The LSM6DSL accelerometer recognizes double taps in hardware. `Lsm6dslTap`
+(include/lsm6dsl_tap.hpp) configures the detector per ST AN5040 §5.5.5:
+accelerometer at 416 Hz/±2 g, tap recognition on all three axes with a
+~600 mg threshold (below the app-note example value, so desk taps register),
+~538 ms maximum gap between taps. The configuration is *unlatched* (LIR = 0,
+the app-note example value): latched mode combined with the task's continuous
+`TAP_SRC` polling prevented the second tap of a gesture from ever pairing on
+this board, while unlatched works — the `DOUBLE_TAP` flag then self-clears
+after the Quiet window (~29 ms), which the 20 ms poll samples inside. The
+driver is deliberately *not* an `ISensor` — tap events are a continuous
+gesture stream, the case the sensor interface reserves for a separate event
+source.
+
+`tap_task` polls the tap-source register every 20 ms and prints
+`[<uptime> ms] Double tap detected` over the ST-LINK UART for each gesture
+(repeats inside 100 ms are suppressed — the flag outlives one poll). A
+recognized single tap prints a rate-limited `Single tap detected (no second
+tap within 0.5 s)` tuning line — it proves the chip sees taps when doubles
+are not being paired, and consecutive lines show the tap rhythm. Init and
+bus-loss recovery use the same exponential retry backoff as the
+environmental sensors.
 
 **Important pitfall:** objects referenced by FreeRTOS tasks must not live in
 `main()`'s stack frame. The Cortex-M4F port resets the MSP from the vector
@@ -216,11 +248,12 @@ even faults caused by a task destroying its own stack.
 The heartbeat task also prints stack high-water marks every ~5 s:
 
 ```text
-Stack free words: HB=332 SN=930 TM=880
+Stack free words: HB=372 SN=836 TM=858 TP=370
 ```
 
 Values are minimum-ever free words per task (Heartbeat, SensorTask,
-TelemetryTask); a value near zero identifies a task at risk of overflow.
+TelemetryTask, TapTask); a value near zero identifies a task at risk of
+overflow.
 At fault time the firmware additionally hex-dumps the UART/I2C mutex and
 telemetry queue structures so memory corruption can be compared across runs.
 
@@ -254,9 +287,10 @@ cmake --build build/host-tests
 ./build/host-tests/unit_tests
 ```
 
-Expected output: `PASS: split_float tests`, `PASS: hts221 tests`,
-`PASS: post_check tests`. You can also run `ctest --test-dir
-build/host-tests --output-on-failure`.
+Expected output: one `PASS: <suite>: <case>` (or `FAIL: ...`) line per test
+case as it runs, followed by the `PASS: <suite> tests` summary lines for
+split_float, hts221, lps22hb, post_check, stall_tracker, and lsm6dsl_tap. You
+can also run `ctest --test-dir build/host-tests --output-on-failure`.
 
 ### On-target self-test
 
@@ -272,9 +306,12 @@ cmake -B build/selftest -G Ninja -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build/selftest
 ```
 
-Expected serial output: `Self-test PASS (split_float, hts221, lps22hb,
-post_check, stall_tracker, queue probe)` after the banner; a failing suite
-prints its case after `[FATAL] Self-test ... FAILED:` and halts.
+Expected serial output: one `[Self-test] PASS <suite>: <case>` line per test
+case as it runs (so a failing target names the exact case), ending with
+`Self-test PASS (split_float, hts221, lps22hb, post_check, stall_tracker,
+lsm6dsl_tap, queue probe)` after the banner. A failing case prints
+`[Self-test] FAIL <suite>: <case>` and the firmware then prints
+`[FATAL] Self-test <suite> FAILED: <case>` and halts.
 
 #### Running the self-test on the target
 
@@ -297,8 +334,9 @@ and watch the serial port:
 3. Open the serial terminal as described in
    [Viewing serial output](#viewing-serial-output) (115200 8-N-1) and watch
    for the `Self-test PASS (...)` line after the banner.
-4. On failure the firmware prints `[FATAL] Self-test <suite> FAILED: <case>`
-   and halts (LED stops blinking). Fix the case, rebuild, and flash again.
+4. On failure the failing case prints `[Self-test] FAIL <suite>: <case>` and
+   the firmware then prints `[FATAL] Self-test <suite> FAILED: <case>` and
+   halts (LED stops blinking). Fix the case, rebuild, and flash again.
 5. Afterwards, flash the normal debug or release image to return to the
    regular firmware.
 
@@ -309,6 +347,7 @@ and watch the serial port:
 | `split_float` | Sign preservation in (-1, 0), rounding vs truncation, fraction carry, invariants across a value sweep |
 | `hts221` | WHO_AM_I check, calibration-image load, degenerate-calibration guard, linear interpolation at midpoints and endpoints, negative temperatures, humidity clamping, invalid sample on bus loss |
 | `lps22hb` | WHO_AM_I check, pressure conversion (hPa), 24-bit sign extension, negative values, per-channel valid flags, invalid sample on bus loss |
+| `lsm6dsl_tap` | WHO_AM_I check, AN5040 double-tap configuration registers written at init, double-tap event decode (and non-events), bus error reporting |
 | `post_check` | All-devices-present pass, missing-device detection with reported address, probe stop at first failure, empty list |
 | `stall_tracker` | Consecutive-drop counting, reset on recovery, fresh stall after recovery, 1000-sample stall tracking |
 | queue probe (target only) | A full `rtos::Queue` rejects a zero-tick send and draining makes room again — the bounded-send mechanism the drop policy relies on |
@@ -490,23 +529,25 @@ Open the board's ST-LINK virtual COM port with a serial terminal:
 - Flow control: none
 
 You should see a startup banner, the I2C self-test result, and then sensor
-telemetry once per second (one line per valid channel, plus a pressure line
-from the LPS22HB) with stack reports every ~5 s:
+telemetry once every five seconds (one line per valid channel, plus a
+pressure line from the LPS22HB) with stack reports every ~5 s:
 
 ```text
 [Post Success] All expected devices found
 
 STM32L4S5I-IOT01A Sensor Node
-[72 ms] Temp: 31.71 C
-[72 ms] Humidity: 46.21 %
-[72 ms] Pressure: 1013.25 hPa
-[1072 ms] Temp: 31.65 C
-[1072 ms] Humidity: 46.11 %
-Stack free words: HB=332 SN=930 TM=880
+[5000 ms] Temp: 31.71 C
+[5000 ms] Humidity: 46.21 %
+[5000 ms] Pressure: 1013.25 hPa
+[10000 ms] Temp: 31.65 C
+[10000 ms] Humidity: 46.11 %
+[12040 ms] Double tap detected
+Stack free words: HB=372 SN=836 TM=850 TP=370
 ```
 
 Sensor read failures print `Sensor 0x%02X read failed; retrying next cycle`
-and the firmware continues sampling the other sensors. Press the board reset
+and the firmware continues sampling the other sensors. Double-tapping the
+board prints `[<uptime> ms] Double tap detected`. Press the board reset
 button to restart the application.
 
 ## Cleaning

@@ -101,7 +101,10 @@ if(STM32_SELF_TEST)
         tests/test_lps22hb.cpp
         tests/test_post_check.cpp
         tests/test_stall_tracker.cpp
+        tests/test_lsm6dsl_tap.cpp
     )
+    # src/main.cpp installs the UART per-case reporter from tests/test_report.hpp.
+    target_include_directories(${PROJECT_NAME}.elf PRIVATE ${CMAKE_SOURCE_DIR}/tests)
     target_compile_definitions(${PROJECT_NAME}.elf PRIVATE STM32_SELF_TEST STM32_TARGET)
 endif()
 

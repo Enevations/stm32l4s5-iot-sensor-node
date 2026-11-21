@@ -1,10 +1,11 @@
 /** @file main.cpp
  *  @brief Firmware entry point for the STM32L4S5I-IOT01A IoT sensor node.
  *
- * Three FreeRTOS tasks cooperate through a telemetry queue: a heartbeat task
+ * Four FreeRTOS tasks cooperate through a telemetry queue: a heartbeat task
  * (LED and stack-margin reports), a sensor task reading the onboard HTS221
- * humidity/temperature sensor over I2C2, and a telemetry task printing
- * readings over the ST-LINK virtual COM port.
+ * humidity/temperature and LPS22HB pressure sensors over I2C2, a telemetry
+ * task printing readings over the ST-LINK virtual COM port, and a tap task
+ * polling the LSM6DSL hardware double-tap detector on the same bus.
  */
 
 #include <cstdio>
@@ -21,8 +22,13 @@
 #include "sensor_interface.hpp"
 #include "hts221_sensor.hpp"
 #include "lps22hb_sensor.hpp"
+#include "lsm6dsl_tap.hpp"
 #include "split_float.hpp"
 #include "stall_tracker.hpp"
+
+#ifdef STM32_SELF_TEST
+#include "test_report.hpp"
+#endif
 
 #ifdef STM32_SELF_TEST
 // Provided by tests/*.cpp, compil ed into the firmware when CMake is
@@ -32,6 +38,7 @@ extern bool run_hts221_tests(char* error_buffer, std::size_t error_size);
 extern bool run_lps22hb_tests(char* error_buffer, std::size_t error_size);
 extern bool run_post_check_tests(char* error_buffer, std::size_t error_size);
 extern bool run_stall_tracker_tests(char* error_buffer, std::size_t error_size);
+extern bool run_lsm6dsl_tap_tests(char* error_buffer, std::size_t error_size);
 #endif
 
 // --- FreeRTOS Kernel Hooks ---
@@ -59,6 +66,7 @@ struct AppContext {
     bsp::I2cBus i2c_bus;
     drivers::Hts221Sensor hts221{i2c_bus};
     drivers::Lps22hbSensor lps22hb{i2c_bus};
+    drivers::Lsm6dslTap lsm6dsl_tap{i2c_bus};
     rtos::Queue<TelemetryMessage> telemetry_queue{8};
 };
 
@@ -68,8 +76,9 @@ inline std::atomic<BoardState> gboard_state{BoardState::Healthy};
 
 /// Native task handles mirrored from main()'s rtos::Task objects so heartbeat()
 /// can query each task's stack high-water mark; a null entry makes the report
-/// fall back to heartbeat's own stack for that slot.
-static TaskHandle_t g_task_handles[3]{};
+/// fall back to heartbeat's own stack for that slot. Slots: 0 heartbeat,
+/// 1 sensor, 2 telemetry, 3 tap.
+static TaskHandle_t g_task_handles[4]{};
 
 /// Application context pointer for fault-time diagnostics.
 static AppContext* g_app_context{nullptr};
@@ -304,8 +313,11 @@ static void heartbeat(void* raw_ctx) {
             static_cast<unsigned long>(uxTaskGetStackHighWaterMark(g_task_handles[1]));
         const unsigned long tm =
             static_cast<unsigned long>(uxTaskGetStackHighWaterMark(g_task_handles[2]));
+        const unsigned long tp =
+            static_cast<unsigned long>(uxTaskGetStackHighWaterMark(g_task_handles[3]));
         const int len = std::snprintf(msg, sizeof(msg),
-                                      "Stack free words: HB=%lu SN=%lu TM=%lu\r\n", hb, sn, tm);
+                                      "Stack free words: HB=%lu SN=%lu TM=%lu TP=%lu\r\n",
+                                      hb, sn, tm, tp);
         if (len > 0) {
             uart1.write(msg, static_cast<std::size_t>(len));
         }
@@ -326,7 +338,8 @@ static const char* init_status_text(drivers::InitStatus status) noexcept {
 }
 
 /**
- * @brief Brings every registered sensor up and samples them once per second.
+ * @brief Brings every registered sensor up and samples them once every
+ * five seconds.
  *
  * Each sensor initializes independently with its own retry backoff (2 s -> 4 s
  * -> 8 s cap): one failed sensor never blocks the others, and recovery clears
@@ -467,7 +480,130 @@ static void sensor_task(void* raw_ctx) {
                 }
             }
         }
-        rtos::sleep_ms(1000);
+        rtos::sleep_ms(5000);
+    }
+}
+
+/**
+ * @brief Reports double taps detected by the LSM6DSL hardware.
+ *
+ * The chip recognizes the gesture itself (slope threshold plus quiet/shock/
+ * duration windows configured in drivers::Lsm6dslTap::init per ST AN5040),
+ * so this task only polls the TAP_SRC register every 20 ms and prints a
+ * message each time a double-tap event is consumed. The configuration is
+ * unlatched, so the DOUBLE_TAP flag self-clears after the Quiet window
+ * (~29 ms) and the poll reads inside that window. Init follows the same
+ * retry backoff as the environmental sensors; a bus failure during polling
+ * drops back into that reinit loop instead of spinning on errors.
+ *
+ * @param raw_ctx Pointer to the AppContext owning the tap driver.
+ */
+static void tap_task(void* raw_ctx) {
+    auto* ctx = static_cast<AppContext*>(raw_ctx);
+
+    bool ready = false;
+    uint32_t attempts = 0;
+    uint32_t next_try_ms = 0;
+    bool fault_flagged = false;
+    // Rate limit for the single-tap tuning aid; low enough that consecutive
+    // knocks of a double attempt show their real spacing in the log.
+    uint32_t last_single_log_ms = 0;
+    constexpr uint32_t kSingleLogMinGapMs = 200U;
+    // Unlatched double-tap flags stay visible ~29 ms, so consecutive polls
+    // can report the same gesture twice; suppress repeats inside 100 ms.
+    uint32_t last_double_log_ms = 0;
+    constexpr uint32_t kDoubleLogMinGapMs = 100U;
+
+    char msg[112];
+
+    for(;;) {
+        const uint32_t now = HAL_GetTick();
+
+        // Bring the tap detector up; retry with backoff until it succeeds.
+        if (!ready) {
+            if (now < next_try_ms) {
+                rtos::sleep_ms(50);
+                continue;
+            }
+            ++attempts;
+            const auto status = ctx->lsm6dsl_tap.init();
+            if (status == drivers::InitStatus::Ok) {
+                ready = true;
+                const int len = std::snprintf(msg, sizeof(msg),
+                    "LSM6DSL 0x%02X tap detection ready (attempt %lu)\r\n",
+                    ctx->lsm6dsl_tap.i2c_address(),
+                    static_cast<unsigned long>(attempts));
+                if (len > 0) {
+                    uart1.write(msg, static_cast<std::size_t>(len));
+                }
+            }
+            else {
+                fault_flagged = true;
+                gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
+                const uint32_t backoff_ms = 1000U << ((attempts < 3U) ? attempts : 3U);
+                next_try_ms = now + backoff_ms;
+                const int len = std::snprintf(msg, sizeof(msg),
+                    "LSM6DSL 0x%02X tap init failed (attempt %lu: %s); retrying in %lu s\r\n",
+                    ctx->lsm6dsl_tap.i2c_address(),
+                    static_cast<unsigned long>(attempts),
+                    init_status_text(status),
+                    static_cast<unsigned long>(backoff_ms / 1000U));
+                if (len > 0) {
+                    uart1.write(msg, static_cast<std::size_t>(len));
+                }
+            }
+        }
+
+        // Same clearing rule as sensor_task: only faults this task raised.
+        if (fault_flagged && ready) {
+            fault_flagged = false;
+            gboard_state.store(BoardState::Healthy, std::memory_order_release);
+        }
+
+        if (!ready) {
+            rtos::sleep_ms(50);
+            continue;
+        }
+
+        // The double-tap flag is visible ~29 ms after recognition, inside
+        // the 20 ms poll interval, so gestures are not missed.
+        const auto event = ctx->lsm6dsl_tap.read_event();
+        if (event == drivers::TapEvent::DoubleTap) {
+            const uint32_t now_ms = HAL_GetTick();
+            if (now_ms - last_double_log_ms >= kDoubleLogMinGapMs) {
+                last_double_log_ms = now_ms;
+                const int len = std::snprintf(msg, sizeof(msg),
+                    "[%lu ms] Double tap detected\r\n",
+                    static_cast<unsigned long>(now_ms));
+                if (len > 0) {
+                    uart1.write(msg, static_cast<std::size_t>(len));
+                }
+            }
+        }
+        else if (event == drivers::TapEvent::SingleTap) {
+            // Tuning aid: the chip sees taps but did not pair them into a
+            // double (second tap too weak or too far apart). Rate-limited.
+            const uint32_t now_ms = HAL_GetTick();
+            if (now_ms - last_single_log_ms >= kSingleLogMinGapMs) {
+                last_single_log_ms = now_ms;
+                const int len = std::snprintf(msg, sizeof(msg),
+                    "[%lu ms] Single tap detected (no second tap within 0.5 s)\r\n",
+                    static_cast<unsigned long>(now_ms));
+                if (len > 0) {
+                    uart1.write(msg, static_cast<std::size_t>(len));
+                }
+            }
+        }
+        else if (event == drivers::TapEvent::BusError) {
+            ready = false;
+            fault_flagged = true;
+            gboard_state.store(BoardState::HardwareFault, std::memory_order_release);
+            const uint32_t backoff_ms = 1000U << ((attempts < 3U) ? attempts : 3U);
+            next_try_ms = HAL_GetTick() + backoff_ms;
+            uart1.write("LSM6DSL tap source read failed; reinitializing\r\n");
+        }
+
+        rtos::sleep_ms(20);
     }
 }
 
@@ -548,6 +684,21 @@ static void fail_before_hal_init() {
     }
 }
 
+#ifdef STM32_SELF_TEST
+
+/// @brief Per-case self-test reporter: prints each case over UART1 as it runs,
+/// so a target failure names the exact case instead of only the first one.
+static void uart_report_case(const char* suite, const char* what, bool passed) {
+    char line[128];
+    const int len = std::snprintf(line, sizeof(line), "[Self-test] %s %s: %s\r\n",
+                                  passed ? "PASS" : "FAIL", suite, what);
+    if (len > 0) {
+        uart1.write(line, static_cast<std::size_t>(len));
+    }
+}
+
+#endif // STM32_SELF_TEST
+
 /**
  * @brief Initializes the MCU and starts the FreeRTOS scheduler.
  * @return This function normally never returns.
@@ -572,6 +723,7 @@ int main() {
     {
         char self_test_error[128];
         bool self_test_ok = true;
+        test::set_reporter(uart_report_case);
         if (!run_split_float_tests(self_test_error, sizeof(self_test_error))) {
             self_test_ok = false;
             uart1.write("[FATAL] Self-test split_float FAILED: ");
@@ -602,18 +754,30 @@ int main() {
             uart1.write(self_test_error, std::strlen(self_test_error));
             uart1.write("\r\n");
         }
+        if (!run_lsm6dsl_tap_tests(self_test_error, sizeof(self_test_error))) {
+            self_test_ok = false;
+            uart1.write("[FATAL] Self-test lsm6dsl_tap FAILED: ");
+            uart1.write(self_test_error, std::strlen(self_test_error));
+            uart1.write("\r\n");
+        }
 
         // Real-queue probe: a full queue must reject a zero-tick send and
         // draining it must make room again — the bounded-send mechanism the
-        // drop policy in sensor_task relies on.
+        // drop policy in sensor_task relies on. The single slot is filled
+        // first; the rejection check must run against a full queue.
         {
             rtos::Queue<uint32_t> probe_queue(1);
             const uint32_t value = 42;
             uint32_t drained = 0;
+            const bool fill_ok = probe_queue.send(value, 0);
             const bool full_rejected = !probe_queue.send(value, 0);
             const bool receive_ok = probe_queue.receive(drained, 0) && drained == value;
             const bool refill_ok = probe_queue.send(value, 0);
-            if (!full_rejected || !receive_ok || !refill_ok) {
+            test::report_case("queue_probe", "zero-tick send fills the empty slot", fill_ok);
+            test::report_case("queue_probe", "full queue rejects zero-tick send", full_rejected);
+            test::report_case("queue_probe", "drain returns the sent value", receive_ok);
+            test::report_case("queue_probe", "drained slot accepts again", refill_ok);
+            if (!fill_ok || !full_rejected || !receive_ok || !refill_ok) {
                 self_test_ok = false;
                 uart1.write("[FATAL] Self-test queue probe FAILED\r\n");
                 while (true) {}
@@ -622,7 +786,7 @@ int main() {
         if (!self_test_ok) {
             while (true) {}
         }
-        uart1.write("Self-test PASS (split_float, hts221, lps22hb, post_check, stall_tracker, queue probe)\r\n");
+        uart1.write("Self-test PASS (split_float, hts221, lps22hb, post_check, stall_tracker, lsm6dsl_tap, queue probe)\r\n");
     }
 #endif
 
@@ -637,7 +801,8 @@ int main() {
     rtos::Task heartbeat_task("Heartbeat", 512, tskIDLE_PRIORITY + 2, heartbeat, &app);
     rtos::Task sensor_task_handle("SensorTask", 1024, tskIDLE_PRIORITY + 1, sensor_task, &app);
     rtos::Task telemetry_task_handle("TelemetryTask", 1024, tskIDLE_PRIORITY + 1, telemetry_task, &app);
-    
+    rtos::Task tap_task_handle("TapTask", 512, tskIDLE_PRIORITY + 1, tap_task, &app);
+
     // Mirror the task handles into g_task_handles for heartbeat()'s stack
     // report: the handles live in main()'s rtos::Task locals, which heartbeat
     // cannot reach. Must run after task creation (xTaskCreate writes them)
@@ -645,6 +810,7 @@ int main() {
     g_task_handles[0] = heartbeat_task.handle();
     g_task_handles[1] = sensor_task_handle.handle();
     g_task_handles[2] = telemetry_task_handle.handle();
+    g_task_handles[3] = tap_task_handle.handle();
 
     // Belt-and-suspenders creation checks. Heap exhaustion normally trips
     // vApplicationMallocFailedHook inside the kernel allocation itself, but
@@ -652,7 +818,8 @@ int main() {
     // fail-stop guarantee independent of that hook.
     if (!uart1.mutex().valid() || !app.i2c_bus.mutex().valid() ||
         !app.telemetry_queue.valid() || !heartbeat_task.valid() ||
-        !sensor_task_handle.valid() || !telemetry_task_handle.valid()) {
+        !sensor_task_handle.valid() || !telemetry_task_handle.valid() ||
+        !tap_task_handle.valid()) {
         uart1.write("\r\n[FATAL] RTOS object creation failed\r\n");
         while (true) {}
     }
