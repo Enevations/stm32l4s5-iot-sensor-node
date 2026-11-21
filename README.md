@@ -31,9 +31,11 @@ At startup, `src/main.cpp`:
      merged reading — `[<uptime> ms] Temp: <t>.<tt> C`,
      `[<uptime> ms] Humidity: <h>.<hh> %`,
      `[<uptime> ms] Pressure: <p>.<pp> hPa`.
-   - **TapTask** (priority 1): polls the LSM6DSL tap-source register
-     every 20 ms and prints `[<uptime> ms] Double tap detected` whenever the
-     chip's hardware double-tap recognizer reports an event.
+   - **TapTask** (priority 1): sleeps until the LSM6DSL INT1 output pulses
+     PD11 (EXTI11 interrupt + direct-to-task notification), then reads the
+     tap source over I2C and prints `[<uptime> ms] Double tap detected`
+     whenever the chip's hardware double-tap recognizer reports an event.
+     Zero CPU between gestures.
 
 The FreeRTOS SysTick runs at 1 kHz. The tick hook calls `HAL_IncTick()`. The
 firmware also has fail-stop hooks for allocation failure, stack overflow, and
@@ -170,26 +172,29 @@ read as a consistent pair.
 ### Tap detection
 
 The LSM6DSL accelerometer recognizes double taps in hardware. `Lsm6dslTap`
-(include/lsm6dsl_tap.hpp) configures the detector per ST AN5040 §5.5.5:
-accelerometer at 416 Hz/±2 g, tap recognition on all three axes with a
-~600 mg threshold (below the app-note example value, so desk taps register),
-~538 ms maximum gap between taps. The configuration is *unlatched* (LIR = 0,
-the app-note example value): latched mode combined with the task's continuous
-`TAP_SRC` polling prevented the second tap of a gesture from ever pairing on
-this board, while unlatched works — the `DOUBLE_TAP` flag then self-clears
-after the Quiet window (~29 ms), which the 20 ms poll samples inside. The
-driver is deliberately *not* an `ISensor` — tap events are a continuous
-gesture stream, the case the sensor interface reserves for a separate event
-source.
+(include/drivers/lsm6dsl_tap.hpp) configures the detector per ST AN5040
+§5.5.5: accelerometer at 416 Hz/±2 g, tap recognition on all three axes with
+a ~600 mg threshold (below the app-note example value, so desk taps
+register), ~538 ms maximum gap between taps. The configuration is
+*unlatched* (LIR = 0, the app-note example value): latched mode combined
+with continuous `TAP_SRC` reading prevented the second tap of a gesture
+from ever pairing on this board, while unlatched works — the `DOUBLE_TAP`
+flag then self-clears after the Quiet window (~29 ms). The driver is
+deliberately *not* an `ISensor` — tap events are a continuous gesture
+stream, the case the sensor interface reserves for a separate event source.
+`MD1_CFG` routes only the double-tap event to the INT1 pin, which the board
+wires to PD11.
 
-`tap_task` polls the tap-source register every 20 ms and prints
-`[<uptime> ms] Double tap detected` over the ST-LINK UART for each gesture
-(repeats inside 100 ms are suppressed — the flag outlives one poll). A
-recognized single tap prints a rate-limited `Single tap detected (no second
-tap within 0.5 s)` tuning line — it proves the chip sees taps when doubles
-are not being paired, and consecutive lines show the tap rhythm. Init and
-bus-loss recovery use the same exponential retry backoff as the
-environmental sensors.
+`tap_task` is fully interrupt-driven: `bsp::tap_interrupt_init` maps PD11 to
+EXTI line 11 (rising edge, interrupt priority at the FreeRTOS syscall
+level) and the ISR hands each INT1 pulse to the task as a direct-to-task
+notification. The task sleeps blocked on that notification — 0% CPU between
+gestures — and only after waking reads the tap source over I2C in task
+context (the bus wrapper is blocking, so the ISR itself never touches the
+bus) and prints `[<uptime> ms] Double tap detected`. The unlatched flag
+stays readable for the whole ~29 ms pulse, so the wake-read latency cannot
+miss the event. Init and bus-loss recovery use the same exponential retry
+backoff as the environmental sensors.
 
 **Important pitfall:** objects referenced by FreeRTOS tasks must not live in
 `main()`'s stack frame. The Cortex-M4F port resets the MSP from the vector
