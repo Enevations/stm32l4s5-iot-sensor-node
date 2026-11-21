@@ -4,9 +4,9 @@
  *  @brief Clock tree, port, and power-on self-test initialization.
  */
 
-#include "i2c_bus.hpp"
-#include "led.hpp"
-#include "uart.hpp"
+#include "bsp/i2c_bus.hpp"
+#include "bsp/led.hpp"
+#include "bsp/uart.hpp"
 
 namespace bsp {
 

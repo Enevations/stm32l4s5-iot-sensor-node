@@ -8,8 +8,8 @@
 #include <cstddef>
 
 #include "stm32l4xx_hal.h"
-#include "rtos.hpp"
-#include "i2c_interface.hpp"
+#include "rtos/rtos.hpp"
+#include "bsp/i2c_interface.hpp"
 
 namespace bsp {
 

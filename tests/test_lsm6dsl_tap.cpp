@@ -9,7 +9,7 @@
 #include <cstdint>
 
 #include "fake_i2c_bus.hpp"
-#include "lsm6dsl_tap.hpp"
+#include "drivers/lsm6dsl_tap.hpp"
 #include "test_report.hpp"
 
 namespace {
@@ -18,12 +18,6 @@ constexpr const char* kSuite = "lsm6dsl_tap";
 
 std::size_t passed = 0;
 std::size_t failures = 0;
-
-void record_failure(const char* what, char* error_buffer, std::size_t error_size) {
-    if (++failures == 1U && error_buffer != nullptr && error_size > 0U) {
-        std::snprintf(error_buffer, error_size, "%s", what);
-    }
-}
 
 void expect_true(bool condition, const char* what, char* error_buffer, std::size_t error_size) {
     test::report_case(kSuite, what, condition);

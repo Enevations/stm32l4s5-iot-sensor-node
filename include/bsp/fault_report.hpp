@@ -9,7 +9,7 @@
  * before register_fault_diagnostics() ran.
  */
 
-#include "uart.hpp"
+#include "bsp/uart.hpp"
 
 namespace bsp {
 

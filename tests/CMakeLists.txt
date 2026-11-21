@@ -23,9 +23,9 @@ set(TEST_SOURCES
 add_executable(unit_tests
     host_main.cpp
     ${TEST_SOURCES}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/hts221_sensor.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/lps22hb_sensor.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../src/lsm6dsl_tap.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/drivers/hts221_sensor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/drivers/lps22hb_sensor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/drivers/lsm6dsl_tap.cpp
 )
 target_include_directories(unit_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../include

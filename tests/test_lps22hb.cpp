@@ -9,7 +9,7 @@
 #include <cstdint>
 
 #include "fake_i2c_bus.hpp"
-#include "lps22hb_sensor.hpp"
+#include "drivers/lps22hb_sensor.hpp"
 #include "test_report.hpp"
 
 namespace {

@@ -9,7 +9,7 @@
 #include <cstdint>
 
 #include "fake_i2c_bus.hpp"
-#include "post_check.hpp"
+#include "bsp/post_check.hpp"
 #include "test_report.hpp"
 
 namespace {

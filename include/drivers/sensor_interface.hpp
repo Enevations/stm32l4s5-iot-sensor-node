@@ -29,6 +29,22 @@ enum class InitStatus : uint8_t {
 };
 
 /**
+ * @brief Maps a driver init failure to a human-readable reason.
+ *
+ * Pure and host-testable: used by the retry loops to log attempt outcomes.
+ */
+inline const char* init_status_text(InitStatus status) noexcept {
+    switch (status) {
+        case InitStatus::Ok:                 return "ok";
+        case InitStatus::BusError:           return "bus error";
+        case InitStatus::WhoAmIMismatch:     return "WHO_AM_I mismatch";
+        case InitStatus::InvalidCalibration: return "invalid calibration";
+    }
+    return "unknown";
+}
+
+
+/**
  * @brief Common interface for the I2C environmental sensors on the bus.
  *
  * One implementation per physical device — Hts221Sensor, Lps22hbSensor, ... —

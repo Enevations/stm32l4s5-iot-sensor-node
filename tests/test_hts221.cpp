@@ -14,7 +14,7 @@
 #include <cstring>
 
 #include "fake_i2c_bus.hpp"
-#include "hts221_sensor.hpp"
+#include "drivers/hts221_sensor.hpp"
 #include "test_report.hpp"
 
 namespace {

@@ -7,12 +7,12 @@
  * shared with the host unit-test binary.
  */
 
-#include "self_test.hpp"
+#include "app/self_test.hpp"
 
 #include <cstdio>
 #include <cstring>
 
-#include "rtos.hpp"
+#include "rtos/rtos.hpp"
 
 #ifdef STM32_SELF_TEST
 

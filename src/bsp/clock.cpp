@@ -2,13 +2,13 @@
  *  @brief Clock tree, port, and power-on self-test initialization.
  */
 
-#include "clock.hpp"
+#include "bsp/clock.hpp"
 
 #include <cstdio>
 #include <cstring>
 
-#include "board_state.hpp"
-#include "post_check.hpp"
+#include "bsp/board_state.hpp"
+#include "bsp/post_check.hpp"
 #include "stm32l4xx_hal.h"
 
 namespace bsp {

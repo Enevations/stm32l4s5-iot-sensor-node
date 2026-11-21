@@ -14,15 +14,24 @@ POST → static `AppContext` → task creation → scheduler start) by moving ea
 cohesive block into its own `include/` + `src/` module pair, following the
 existing `bsp::` (board support) and `drivers::` (device driver) conventions.
 
-## Current sizes
+## Result (all tiers complete, 2026-11-21)
 
-| File | Lines (2026-11-21, after Tier 2) |
+| File | Lines |
 |---|---|
-| `src/main.cpp` | 530 |
+| `src/main.cpp` | 141 |
+| `src/environment_tasks.cpp` | 196 |
+| `src/tap_task.cpp` | 128 |
+| `src/fault_report.cpp` | 179 |
 | `src/self_test.cpp` | 114 |
 | `src/clock.cpp` | 78 |
-| `src/fault_report.cpp` | 179 |
+| `src/heartbeat.cpp` | 53 |
 | `src/board_state.cpp` | 36 |
+| `include/app_context.hpp` | 57 |
+| `include/tasks.hpp` | 27 |
+| `include/clock.hpp` | 46 |
+| `include/fault_report.hpp` | 33 |
+| `include/board_state.hpp` | 24 |
+| `include/self_test.hpp` | 25 |
 
 ## Starting point (before Tier 1)
 
@@ -115,22 +124,37 @@ existing `bsp::` (board support) and `drivers::` (device driver) conventions.
   `g_app_context`, `gboard_state`, and the `<atomic>`/`<cstring>` includes.
   `main.cpp`: 734 → 530 lines.
 
-### Tier 3 — application tasks and shared state: PENDING
+### Tier 3 — application tasks and shared state: DONE (2026-11-21)
 
-- `include/app_context.hpp`: `AppContext` and `TelemetryMessage` (the
-  `BoardState`/fault-state half already landed with Tier 2's
-  `board_state` module).
-- `src/environment_tasks.cpp`: `sensor_task`, `telemetry_task`,
-  `print_channel`; `init_status_text` becomes a `drivers::` helper in
-  `include/sensor_interface.hpp` (host-testable).
-- `src/tap_task.cpp`: `tap_task`.
-- `src/heartbeat.cpp`: `heartbeat`.
-- `include/tasks.hpp`: declares the four task entry points.
-- `main.cpp` ends at ~130 lines; tasks keep the `void (*)(void*)` signature
-  and `static AppContext` storage rule (contracts 1 and 4).
-- Optional cleanup when touching `main.cpp` blocks: replace file-`static`
-  helpers with anonymous-namespace style used by the driver modules
-  (cosmetic; only where the block moves anyway).
+- Added `include/app_context.hpp`: `AppContext` (now carries `Uart&` and
+  `const Led&` references plus the mirrored `TaskHandle_t task_handles[4]`
+  array — written once by main() between task creation and scheduler start,
+  read by heartbeat) and `TelemetryMessage`. `static AppContext` storage
+  rule preserved (contract 1); the peripheral references bind to file
+  statics declared earlier in the same translation unit.
+- Added `include/tasks.hpp` and moved the task bodies:
+  `src/environment_tasks.cpp` (`app::sensor_task`, `app::telemetry_task`,
+  `print_channel`), `src/tap_task.cpp` (`app::tap_task`),
+  `src/heartbeat.cpp` (`app::heartbeat`). Task entry signatures stay
+  `void (*)(void*)` receiving `&app` (contract 4); tasks reach the UART and
+  LED through `ctx->uart` / `ctx->status_led` instead of file statics.
+- `init_status_text` became an inline `drivers::init_status_text()` in
+  `include/sensor_interface.hpp` (host-testable); both retry loops call it.
+- `main.cpp` ends at 141 lines: tick hook, peripheral statics, pre-HAL
+  failure path, bring-up calls, task creation, validity checks, scheduler
+  start. The `g_task_handles` and `g_app_context` globals are gone (handles
+  live in `AppContext`, diagnostics were registered in Tier 2).
+- **Latent bug fixed along the way:** `config/FreeRTOSConfig.h` declared
+  `extern uint32_t SystemCoreClock;` with no `extern "C"` guard. It worked
+  only because every existing file happened to include the HAL (which
+  declares it with C linkage) before FreeRTOS.h — the unguarded
+  redeclaration inherits C linkage. The new task files included
+  `FreeRTOS.h` first and exposed the conflict. The declaration is now
+  wrapped in `#ifdef __cplusplus extern "C"`, so include order no longer
+  matters.
+- Removed an unused `record_failure` helper from `tests/test_lsm6dsl_tap.cpp`
+  that the target build flagged (`-Wall -Wextra`) after the per-case
+  reporting change.
 
 ## Progress log
 
@@ -138,4 +162,6 @@ existing `bsp::` (board support) and `drivers::` (device driver) conventions.
 |---|---|---|
 | 2026-11-21 | 1 | `main.cpp` 831 → 734 lines; self-test harness extracted to `src/self_test.cpp` + `include/self_test.hpp`; all three variants build clean, host tests pass, `dist/selftest` refreshed |
 | 2026-11-21 | 2 | `main.cpp` 734 → 530 lines; fault-report module (`fault_report`) with registration API, clock/POST module (`clock`), and `board_state` API (Tier 3 partial) extracted; contracts 2 and 3 preserved (hook names/LTO attributes verbatim, fault path lock-free); all three variants build clean, host tests pass |
-| 2026-11-21 | 3 | not started |
+| 2026-11-21 | 3 | `main.cpp` 530 → 141 lines; task bodies extracted (`heartbeat`, `environment_tasks`, `tap_task`) with `app_context.hpp` + `tasks.hpp`; `init_status_text` moved to `sensor_interface.hpp`; fixed latent `FreeRTOSConfig.h` missing-`extern "C"` bug exposed by the new include order; all three variants build clean, host tests pass |
+| 2026-11-21 | follow-up | Folder-per-layer restructure: sources moved to `src/{app,bsp,drivers}/`, headers to `include/{app,bsp,drivers}/`; shared utilities (`split_float.hpp`, `stall_tracker.hpp`) and the composition root (`main.cpp`) stay at the roots; all cross-layer includes are now layer-qualified (`#include "bsp/i2c_bus.hpp"`, `#include "drivers/hts221_sensor.hpp"`, `#include "app/app_context.hpp"`); `tests/CMakeLists.txt` source paths updated; the `GLOB_RECURSE` firmware build picks the subfolders up unchanged; all three variants build clean, host tests pass |
+| 2026-11-21 | follow-up | `include/rtos.hpp` moved to `include/rtos/rtos.hpp` to match the `rtos::` namespace like every other layer; all 7 includers updated to `#include "rtos/rtos.hpp"`; builds clean, host tests pass |

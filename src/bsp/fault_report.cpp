@@ -8,7 +8,7 @@
  * registered UART, whose own lock already skips locking when masked.
  */
 
-#include "fault_report.hpp"
+#include "bsp/fault_report.hpp"
 
 #include <cstdio>
 

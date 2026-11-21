@@ -73,32 +73,44 @@ connection. No wiring is required.
 │   ├── FreeRTOSConfig.h               # FreeRTOS features and interrupt priorities
 │   └── stm32l4xx_hal_conf.h           # Enabled HAL modules
 ├── include/
-│   ├── board_state.hpp                # Hardware-fault flag shared by boot code and tasks
-│   ├── clock.hpp                      # Clock tree, port, and POST initialization
-│   ├── fault_report.hpp               # Fail-stop hooks and hard-fault reporting
-│   ├── hts221_sensor.hpp              # HTS221 humidity/temperature sensor (implements ISensor)
-│   ├── i2c_bus.hpp                    # STM32 I2C2 bus (implements II2cBus)
-│   ├── i2c_interface.hpp              # HAL-free II2cBus abstraction
-│   ├── led.hpp                        # GPIO LED wrapper
-│   ├── lps22hb_sensor.hpp             # LPS22HB barometric sensor (implements ISensor)
-│   ├── lsm6dsl_tap.hpp                # LSM6DSL double-tap driver (gesture event source)
-│   ├── post_check.hpp                 # Pure I2C power-on self-test probe
-│   ├── rtos.hpp                       # FreeRTOS C++ RAII wrappers
-│   ├── self_test.hpp                  # On-target self-test harness (STM32_SELF_TEST)
-│   ├── sensor_interface.hpp           # HAL-free ISensor abstraction + shared sample/InitStatus
+│   ├── app/                           # Application layer: shared state and task entries
+│   │   ├── app_context.hpp            # Shared app state: bus, drivers, queue, UART/LED refs
+│   │   ├── self_test.hpp              # On-target self-test harness (STM32_SELF_TEST)
+│   │   └── tasks.hpp                  # Entry points of the four application tasks
+│   ├── bsp/                           # Board-support layer: peripherals and bring-up
+│   │   ├── board_state.hpp            # Hardware-fault flag shared by boot code and tasks
+│   │   ├── clock.hpp                  # Clock tree, port, and POST initialization
+│   │   ├── fault_report.hpp           # Fail-stop hooks and hard-fault reporting
+│   │   ├── i2c_bus.hpp                # STM32 I2C2 bus (implements II2cBus)
+│   │   ├── i2c_interface.hpp          # HAL-free II2cBus abstraction
+│   │   ├── led.hpp                    # GPIO LED wrapper
+│   │   ├── post_check.hpp             # Pure I2C power-on self-test probe
+│   │   └── uart.hpp                   # Thread-safe UART wrapper
+│   ├── drivers/                       # Device-driver layer: one driver per physical device
+│   │   ├── hts221_sensor.hpp          # HTS221 humidity/temperature sensor (implements ISensor)
+│   │   ├── lps22hb_sensor.hpp         # LPS22HB barometric sensor (implements ISensor)
+│   │   ├── lsm6dsl_tap.hpp            # LSM6DSL double-tap driver (gesture event source)
+│   │   └── sensor_interface.hpp       # HAL-free ISensor abstraction + shared sample/InitStatus
+│   ├── rtos/                          # Kernel-wrapper layer: FreeRTOS C++ RAII wrappers
+│   │   └── rtos.hpp                   # Task/Queue/Mutex/SchedulerLock + sleep_ms
 │   ├── split_float.hpp                # Constexpr telemetry float formatting (host-testable)
-│   ├── stall_tracker.hpp              # Telemetry queue drop/recovery policy (host-testable)
-│   └── uart.hpp                       # Thread-safe UART wrapper
+│   └── stall_tracker.hpp              # Telemetry queue drop/recovery policy (host-testable)
 ├── src/
-│   ├── board_state.cpp                # Atomic hardware-fault flag implementation
-│   ├── clock.cpp                      # Clock tree, port, and POST initialization
-│   ├── fault_report.cpp               # Fail-stop hooks, hard-fault context, kernel dumps
-│   ├── hts221_sensor.cpp              # HTS221 calibration and sample conversion
-│   ├── i2c_bus.cpp                    # I2C2 HAL setup and serialized transactions
-│   ├── lps22hb_sensor.cpp             # LPS22HB pressure/temperature conversion
-│   ├── lsm6dsl_tap.cpp                # LSM6DSL double-tap configuration and event read
-│   ├── main.cpp                       # Clock, GPIO, tasks, and telemetry application
-│   └── self_test.cpp                  # Boot-time self-test runner (STM32_SELF_TEST)
+│   ├── app/                           # Application task bodies and boot-time harness
+│   │   ├── environment_tasks.cpp      # Sensor sampling task + telemetry printing task
+│   │   ├── heartbeat.cpp              # Status LED task with stack-margin reports
+│   │   ├── self_test.cpp              # Boot-time self-test runner (STM32_SELF_TEST)
+│   │   └── tap_task.cpp               # LSM6DSL double-tap reporting task
+│   ├── bsp/                           # Board-support implementations
+│   │   ├── board_state.cpp            # Atomic hardware-fault flag implementation
+│   │   ├── clock.cpp                  # Clock tree, port, and POST initialization
+│   │   ├── fault_report.cpp           # Fail-stop hooks, hard-fault context, kernel dumps
+│   │   └── i2c_bus.cpp                # I2C2 HAL setup and serialized transactions
+│   ├── drivers/                       # Device-driver implementations
+│   │   ├── hts221_sensor.cpp          # HTS221 calibration and sample conversion
+│   │   ├── lps22hb_sensor.cpp         # LPS22HB pressure/temperature conversion
+│   │   └── lsm6dsl_tap.cpp            # LSM6DSL double-tap configuration and event read
+│   └── main.cpp                       # Composition root: bring-up, POST, task creation
 ├── tests/
 │   ├── CMakeLists.txt                 # Host + cross-compiled test targets
 │   ├── fake_i2c_bus.hpp               # Emulated I2C bus with canned registers and NACKs

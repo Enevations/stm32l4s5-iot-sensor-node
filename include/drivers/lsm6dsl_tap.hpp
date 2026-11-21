@@ -6,8 +6,8 @@
 
 #include <cstdint>
 
-#include "i2c_interface.hpp"
-#include "sensor_interface.hpp"
+#include "bsp/i2c_interface.hpp"
+#include "drivers/sensor_interface.hpp"
 
 namespace drivers {
 

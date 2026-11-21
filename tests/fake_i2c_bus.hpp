@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <cstring>
 
-#include "i2c_interface.hpp"
+#include "bsp/i2c_interface.hpp"
 
 namespace test {
 

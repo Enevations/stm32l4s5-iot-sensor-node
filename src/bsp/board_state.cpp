@@ -2,7 +2,7 @@
  *  @brief Atomic hardware-fault flag shared by boot code and tasks.
  */
 
-#include "board_state.hpp"
+#include "bsp/board_state.hpp"
 
 #include <atomic>
 

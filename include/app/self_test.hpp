@@ -4,7 +4,7 @@
  *  @brief On-target self-test harness for STM32_SELF_TEST builds.
  */
 
-#include "uart.hpp"
+#include "bsp/uart.hpp"
 
 namespace app {
 
