@@ -14,6 +14,16 @@ POST → static `AppContext` → task creation → scheduler start) by moving ea
 cohesive block into its own `include/` + `src/` module pair, following the
 existing `bsp::` (board support) and `drivers::` (device driver) conventions.
 
+## Current sizes
+
+| File | Lines (2026-11-21, after Tier 2) |
+|---|---|
+| `src/main.cpp` | 530 |
+| `src/self_test.cpp` | 114 |
+| `src/clock.cpp` | 78 |
+| `src/fault_report.cpp` | 179 |
+| `src/board_state.cpp` | 36 |
+
 ## Starting point (before Tier 1)
 
 | Block in main.cpp | ~Lines | Destination |
@@ -80,23 +90,36 @@ existing `bsp::` (board support) and `drivers::` (device driver) conventions.
   (`tests/*.cpp` inside doc comments), stale glob reconfigure for
   `build/selftest`.
 
-### Tier 2 — fault-report and clock/POST modules: PENDING
+### Tier 2 — fault-report and clock/POST modules: DONE (2026-11-21)
 
-- `src/fault_report.cpp` (+ `include/fault_report.hpp`): all `extern "C"`
-  fail-stop hooks, `HardFault_Handler`/`hard_fault_report`, kernel-object
-  dumps (~115 lines out).
-- `src/clock.cpp` (+ `include/clock.hpp`): `system_clock_config`,
-  `ports_init`, `i2c_scan_check` (~65 lines out).
-- Keep hook names/attributes per contract 2; fault path stays mutex-free per
-  contract 3.
+- Added `include/fault_report.hpp` + `src/fault_report.cpp`: all `extern "C"`
+  fail-stop hooks, `HardFault_Handler`/`hard_fault_report` (names and LTO
+  attributes preserved verbatim, contract 2), and the kernel-object dumps.
+  The hooks reach the UART and diagnostic handles through a registration API
+  (`bsp::register_fault_diagnostics(uart, i2c_mutex_handle, queue_handle)`)
+  called from `main()` once the objects exist; handles are captured by value
+  (stable after kernel-object creation), so `AppContext` is not needed by
+  the fault path. Hooks firing before registration stay silent instead of
+  touching uninitialized hardware. Contract 3 held: hooks still never lock.
+- Added `include/clock.hpp` + `src/clock.cpp`: `bsp::system_clock_config`,
+  `bsp::ports_init(const Led&, Uart&)` (`Led` is used through const refs —
+  its methods are `const` by design for constexpr instances),
+  `bsp::run_i2c_scan_check(I2cBus&, Uart&)`.
+- Tier 3 partial, landed early with this tier: `include/board_state.hpp` +
+  `src/board_state.cpp` — the `gboard_state` atomic became the
+  `bsp::set/clear/is_hardware_fault_active()` API (the `BoardState` enum is now
+  private to the implementation). All main.cpp call sites (heartbeat,
+  sensor_task, tap_task, clock-fail path) were switched to the API, so the
+  raw atomic no longer exists anywhere else.
+- Removed from `main.cpp`: the hooks, dumps, clock/POST functions,
+  `g_app_context`, `gboard_state`, and the `<atomic>`/`<cstring>` includes.
+  `main.cpp`: 734 → 530 lines.
 
 ### Tier 3 — application tasks and shared state: PENDING
 
-- `include/app_context.hpp`: `AppContext`, `TelemetryMessage`, `BoardState`
-  plus a small fault-state API (set/clear/is_faulted over the atomic).
-- `src/board.cpp` (+ `include/board.hpp`): `uart1`, `green_led`, the fault
-  state, and the `g_app_context` diagnostics pointer become module-owned
-  accessors (contract 6).
+- `include/app_context.hpp`: `AppContext` and `TelemetryMessage` (the
+  `BoardState`/fault-state half already landed with Tier 2's
+  `board_state` module).
 - `src/environment_tasks.cpp`: `sensor_task`, `telemetry_task`,
   `print_channel`; `init_status_text` becomes a `drivers::` helper in
   `include/sensor_interface.hpp` (host-testable).
@@ -114,5 +137,5 @@ existing `bsp::` (board support) and `drivers::` (device driver) conventions.
 | Date | Tier | Result |
 |---|---|---|
 | 2026-11-21 | 1 | `main.cpp` 831 → 734 lines; self-test harness extracted to `src/self_test.cpp` + `include/self_test.hpp`; all three variants build clean, host tests pass, `dist/selftest` refreshed |
-| 2026-11-21 | 2 | not started |
+| 2026-11-21 | 2 | `main.cpp` 734 → 530 lines; fault-report module (`fault_report`) with registration API, clock/POST module (`clock`), and `board_state` API (Tier 3 partial) extracted; contracts 2 and 3 preserved (hook names/LTO attributes verbatim, fault path lock-free); all three variants build clean, host tests pass |
 | 2026-11-21 | 3 | not started |

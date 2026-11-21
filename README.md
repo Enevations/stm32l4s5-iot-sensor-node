@@ -73,6 +73,9 @@ connection. No wiring is required.
 │   ├── FreeRTOSConfig.h               # FreeRTOS features and interrupt priorities
 │   └── stm32l4xx_hal_conf.h           # Enabled HAL modules
 ├── include/
+│   ├── board_state.hpp                # Hardware-fault flag shared by boot code and tasks
+│   ├── clock.hpp                      # Clock tree, port, and POST initialization
+│   ├── fault_report.hpp               # Fail-stop hooks and hard-fault reporting
 │   ├── hts221_sensor.hpp              # HTS221 humidity/temperature sensor (implements ISensor)
 │   ├── i2c_bus.hpp                    # STM32 I2C2 bus (implements II2cBus)
 │   ├── i2c_interface.hpp              # HAL-free II2cBus abstraction
@@ -87,6 +90,9 @@ connection. No wiring is required.
 │   ├── stall_tracker.hpp              # Telemetry queue drop/recovery policy (host-testable)
 │   └── uart.hpp                       # Thread-safe UART wrapper
 ├── src/
+│   ├── board_state.cpp                # Atomic hardware-fault flag implementation
+│   ├── clock.cpp                      # Clock tree, port, and POST initialization
+│   ├── fault_report.cpp               # Fail-stop hooks, hard-fault context, kernel dumps
 │   ├── hts221_sensor.cpp              # HTS221 calibration and sample conversion
 │   ├── i2c_bus.cpp                    # I2C2 HAL setup and serialized transactions
 │   ├── lps22hb_sensor.cpp             # LPS22HB pressure/temperature conversion
